@@ -77,6 +77,16 @@ Check version:
   ./fvf -path kv/app/
   ```
 
+- Multiple start paths:
+
+  ```sh
+  # Comma-separated list
+  ./fvf -paths kv/app1/,kv/app2/
+
+  # You can still use -name/-match filters and -values
+  ./fvf -paths kv/app1/,kv/app2/ -values
+  ```
+
 - Name and regex filters:
 
   ```sh
@@ -106,6 +116,7 @@ Check version:
 ### Flags
 
 - -path string          Start path to recurse (default: all KV mounts)
+- -paths string         Comma-separated list of start paths (e.g., kv/app1/,kv/app2/)
 - -kv2                  Assume KV v2 (default). If unsure, leave as-is
 - -kv1                  Assume KV v1 (overrides -kv2 and skips detection)
 - -force-kv2            Force KV v2 and skip auto-detection

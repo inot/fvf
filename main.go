@@ -37,6 +37,7 @@ type options struct {
     timeout     time.Duration
     interactive bool
     showVersion bool
+    paths       []string
 }
 
 func main() {
@@ -66,7 +67,7 @@ func main() {
     }
 
     var items []search.FoundItem
-    if strings.TrimSpace(opts.startPath) == "" {
+    if strings.TrimSpace(opts.startPath) == "" && len(opts.paths) == 0 {
         // Search across all KV mounts
         mounts, err := client.Sys().ListMountsWithContext(ctx)
         if err != nil {
@@ -100,6 +101,24 @@ func main() {
             sub, err := search.WalkVault(ctx, client.Logical(), mnt, kv2, opts.maxDepth, matcher, valuesDuringWalk)
             if err != nil {
                 fatal(fmt.Errorf("error walking mount %s: %w", mnt, err))
+            }
+            items = append(items, sub...)
+        }
+    } else if len(opts.paths) > 0 {
+        // Iterate over provided paths
+        for _, p := range opts.paths {
+            kv2 := opts.kv2
+            if opts.kv1 {
+                kv2 = false
+            } else if !opts.forceKV2 {
+                if v, ok := search.DetectKV2(ctx, client, p); ok {
+                    kv2 = v
+                }
+            }
+            valuesDuringWalk := opts.printValues && !opts.interactive
+            sub, err := search.WalkVault(ctx, client.Logical(), p, kv2, opts.maxDepth, matcher, valuesDuringWalk)
+            if err != nil {
+                fatal(fmt.Errorf("error walking path %s: %w", p, err))
             }
             items = append(items, sub...)
         }
@@ -168,6 +187,8 @@ func main() {
 
 func parseFlags() options {
     var opts options
+    // multi-paths as a simple comma-separated string flag
+    pathsRaw := flag.String("paths", "", "Comma-separated list of start paths, e.g. kv/app1/,kv/app2/")
     // Custom usage to include version header
     flag.Usage = func() {
         fmt.Fprintf(os.Stderr, "fvf %s (commit %s, built %s)\n\n", version, commit, date)
@@ -203,6 +224,16 @@ func parseFlags() options {
     if opts.showVersion {
         fmt.Printf("fvf %s (commit %s, built %s)\n", version, commit, date)
         os.Exit(0)
+    }
+
+    // finalize multi-paths from comma-separated input
+    if *pathsRaw != "" {
+        for _, p := range strings.Split(*pathsRaw, ",") {
+            p = strings.TrimSpace(p)
+            if p != "" {
+                opts.paths = append(opts.paths, p)
+            }
+        }
     }
 
     if strings.TrimSpace(opts.startPath) == "" {
