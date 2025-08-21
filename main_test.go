@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	vault "github.com/hashicorp/vault/api"
+	"fvf/search"
 )
 
 // fakeLogical implements LogicalAPI for testing
@@ -17,68 +18,68 @@ type fakeLogical struct {
 }
 
 func TestWalk_MaxDepth(t *testing.T) {
-    f := &fakeLogical{
-        list: map[string]*vault.Secret{
-            "secret":       {Data: map[string]interface{}{"keys": []interface{}{"a/", "b"}}},
-            "secret/a":     {Data: map[string]interface{}{"keys": []interface{}{"c"}}},
-            // note: no further for secret/a/c
-        },
-        read: map[string]*vault.Secret{
-            "secret/b": {Data: map[string]interface{}{"k": "v"}},
-            "secret/a/c": {Data: map[string]interface{}{"x": 1}},
-        },
-    }
-    currentNamePart = ""
-    items, err := walkVault(context.Background(), f, "secret", false, 1, nil, false)
-    if err != nil {
-        t.Fatal(err)
-    }
-    // With maxDepth=1, only leaf at depth 1 should appear (secret/b), not secret/a/c
-    expect := []foundItem{{Path: "secret/b"}}
-    sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
-    if !reflect.DeepEqual(items, expect) {
-        t.Fatalf("got %#v want %#v", items, expect)
-    }
+	f := &fakeLogical{
+		list: map[string]*vault.Secret{
+			"secret":       {Data: map[string]interface{}{"keys": []interface{}{"a/", "b"}}},
+			"secret/a":     {Data: map[string]interface{}{"keys": []interface{}{"c"}}},
+			// note: no further for secret/a/c
+		},
+		read: map[string]*vault.Secret{
+			"secret/b": {Data: map[string]interface{}{"k": "v"}},
+			"secret/a/c": {Data: map[string]interface{}{"x": 1}},
+		},
+	}
+	search.SetNamePart("")
+	items, err := search.WalkVault(context.Background(), f, "secret", false, 1, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With maxDepth=1, only leaf at depth 1 should appear (secret/b), not secret/a/c
+	expect := []search.FoundItem{{Path: "secret/b"}}
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
+	if !reflect.DeepEqual(items, expect) {
+		t.Fatalf("got %#v want %#v", items, expect)
+	}
 }
 
 func TestReadSecret_ErrorShapes(t *testing.T) {
-    f := &fakeLogical{
-        read: map[string]*vault.Secret{
-            // present but wrong shape for kv2 (no nested data key)
-            "kv/data/bad": {Data: map[string]interface{}{"oops": 1}},
-        },
-    }
-    // kv2 wrong shape
-    _, err := readSecret(context.Background(), f, "kv", "bad", true)
-    if err == nil {
-        t.Fatal("expected error for unexpected v2 data shape")
-    }
-    // nil secret
-    _, err = readSecret(context.Background(), f, "kv", "missing", true)
-    if err == nil {
-        t.Fatal("expected error for nil secret")
-    }
+	f := &fakeLogical{
+		read: map[string]*vault.Secret{
+			// present but wrong shape for kv2 (no nested data key)
+			"kv/data/bad": {Data: map[string]interface{}{"oops": 1}},
+		},
+	}
+	// kv2 wrong shape
+	_, err := search.ReadSecret(context.Background(), f, "kv", "bad", true)
+	if err == nil {
+		t.Fatal("expected error for unexpected v2 data shape")
+	}
+	// nil secret
+	_, err = search.ReadSecret(context.Background(), f, "kv", "missing", true)
+	if err == nil {
+		t.Fatal("expected error for nil secret")
+	}
 }
 
 func TestHandleLeaf_ListNilTriggersRead(t *testing.T) {
-    f := &fakeLogical{
-        list: map[string]*vault.Secret{
-            // simulate List returning nil by omitting entries
-            // so recurse treats mount+inner as leaf
-        },
-        read: map[string]*vault.Secret{
-            "secret/x": {Data: map[string]interface{}{"k": "v"}},
-        },
-    }
-    currentNamePart = ""
-    items, err := walkVault(context.Background(), f, "secret/x", false, 0, nil, false)
-    if err != nil {
-        t.Fatal(err)
-    }
-    expect := []foundItem{{Path: "secret/x"}}
-    if !reflect.DeepEqual(items, expect) {
-        t.Fatalf("got %#v want %#v", items, expect)
-    }
+	f := &fakeLogical{
+		list: map[string]*vault.Secret{
+			// simulate List returning nil by omitting entries
+			// so recurse treats mount+inner as leaf
+		},
+		read: map[string]*vault.Secret{
+			"secret/x": {Data: map[string]interface{}{"k": "v"}},
+		},
+	}
+	search.SetNamePart("")
+	items, err := search.WalkVault(context.Background(), f, "secret/x", false, 0, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect := []search.FoundItem{{Path: "secret/x"}}
+	if !reflect.DeepEqual(items, expect) {
+		t.Fatalf("got %#v want %#v", items, expect)
+	}
 }
 
 func (f *fakeLogical) ListWithContext(_ context.Context, p string) (*vault.Secret, error) {
@@ -97,57 +98,57 @@ func (f *fakeLogical) ReadWithContext(_ context.Context, p string) (*vault.Secre
 }
 
 func TestSplitMount(t *testing.T) {
-	m, in := splitMount("secret/app/config")
+	m, in := search.SplitMount("secret/app/config")
 	if m != "secret" || in != "app/config" {
 		t.Fatalf("unexpected: mount=%q inner=%q", m, in)
 	}
-	m, in = splitMount("secret")
+	m, in = search.SplitMount("secret")
 	if m != "secret" || in != "" {
 		t.Fatalf("unexpected: mount=%q inner=%q", m, in)
 	}
 }
 
 func TestAPIPaths(t *testing.T) {
-	if got := listAPIPath("kv", "app", true); got != "kv/metadata/app" {
+	if got := search.ListAPIPath("kv", "app", true); got != "kv/metadata/app" {
 		t.Fatalf("kv2 list path got %q", got)
 	}
-	if got := readAPIPath("kv", "app", true); got != "kv/data/app" {
+	if got := search.ReadAPIPath("kv", "app", true); got != "kv/data/app" {
 		t.Fatalf("kv2 read path got %q", got)
 	}
-	if got := listAPIPath("secret", "app", false); got != "secret/app" {
+	if got := search.ListAPIPath("secret", "app", false); got != "secret/app" {
 		t.Fatalf("kv1 list path got %q", got)
 	}
-	if got := readAPIPath("secret", "app", false); got != "secret/app" {
+	if got := search.ReadAPIPath("secret", "app", false); got != "secret/app" {
 		t.Fatalf("kv1 read path got %q", got)
 	}
 }
 
 func TestNameAndRegexMatch(t *testing.T) {
-	currentNamePart = "conf"
-	if !nameOrRegexMatch("config", "secret/app/config", nil) {
+	search.SetNamePart("conf")
+	if !search.NameOrRegexMatch("config", "secret/app/config", nil) {
 		t.Fatal("expected name match")
 	}
-	currentNamePart = "x"
+	search.SetNamePart("x")
 	re := regexp.MustCompile(`^secret/.*/config$`)
-	if !nameOrRegexMatch("config", "secret/app/config", re) {
+	if !search.NameOrRegexMatch("config", "secret/app/config", re) {
 		t.Fatal("expected regex match")
 	}
-	currentNamePart = "con"
+	search.SetNamePart("con")
 	re = regexp.MustCompile(`^secret/app/.*$`)
-	if !nameOrRegexMatch("config", "secret/app/config", re) {
+	if !search.NameOrRegexMatch("config", "secret/app/config", re) {
 		t.Fatal("expected both filters to match")
 	}
 	// With OR semantics, regex alone should still match even if name does not
-	currentNamePart = "bad"
-	if !nameOrRegexMatch("config", "secret/app/config", re) {
+	search.SetNamePart("bad")
+	if !search.NameOrRegexMatch("config", "secret/app/config", re) {
 		t.Fatal("expected match with regex even if name filter fails")
 	}
 	// Negative case: neither name nor regex matches
 	re = regexp.MustCompile(`^other/.*$`)
-	if nameOrRegexMatch("config", "secret/app/config", re) {
+	if search.NameOrRegexMatch("config", "secret/app/config", re) {
 		t.Fatal("did not expect match when neither name nor regex match")
 	}
-	currentNamePart = "" // reset
+	search.SetNamePart("") // reset
 }
 
 func TestWalkVault_KV1(t *testing.T) {
@@ -161,12 +162,12 @@ func TestWalkVault_KV1(t *testing.T) {
 			"secret/b/c": {Data: map[string]interface{}{"x": 1}},
 		},
 	}
-	currentNamePart = ""
-	items, err := walkVault(context.Background(), f, "secret", false, 0, nil, false)
+	search.SetNamePart("")
+	items, err := search.WalkVault(context.Background(), f, "secret", false, 0, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect := []foundItem{{Path: "secret/a"}, {Path: "secret/b/c"}}
+	expect := []search.FoundItem{{Path: "secret/a"}, {Path: "secret/b/c"}}
 	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
 	if !reflect.DeepEqual(items, expect) {
 		t.Fatalf("got %#v want %#v", items, expect)
@@ -185,19 +186,19 @@ func TestWalkVault_KV2(t *testing.T) {
 			"kv/data/app/sub/leaf": {Data: map[string]interface{}{"data": map[string]interface{}{"z": 9}}},
 		},
 	}
-	currentNamePart = "cfg"
-	items, err := walkVault(context.Background(), f, "kv", true, 0, nil, false)
+	search.SetNamePart("cfg")
+	items, err := search.WalkVault(context.Background(), f, "kv", true, 0, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect := []foundItem{{Path: "kv/app/cfg"}}
+	expect := []search.FoundItem{{Path: "kv/app/cfg"}}
 	if !reflect.DeepEqual(items, expect) {
 		t.Fatalf("got %#v want %#v", items, expect)
 	}
 
 	// With values
-	currentNamePart = ""
-	items, err = walkVault(context.Background(), f, "kv", true, 0, nil, true)
+	search.SetNamePart("")
+	items, err = search.WalkVault(context.Background(), f, "kv", true, 0, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
