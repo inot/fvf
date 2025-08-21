@@ -12,6 +12,7 @@ import (
 
     "fvf/search"
     "fvf/ui"
+    "golang.org/x/term"
 )
 
 // Version information. Overwrite via -ldflags "-X main.version=... -X main.commit=... -X main.date=..."
@@ -154,6 +155,7 @@ func parseFlags() options {
     flag.Usage = func() {
         fmt.Fprintf(os.Stderr, "fvf %s (commit %s, built %s)\n\n", version, commit, date)
         fmt.Fprintf(os.Stderr, "Usage: fvf [-path <mount/inner/>] [flags]\n\n")
+        fmt.Fprintf(os.Stderr, "Note: Running with no flags starts Interactive mode by default.\n\n")
         flag.PrintDefaults()
     }
     flag.StringVar(&opts.startPath, "path", "", "Start path to recurse, e.g. secret/ or secret/app/ (default: all KV mounts)")
@@ -168,6 +170,17 @@ func parseFlags() options {
     flag.BoolVar(&opts.interactive, "interactive", false, "Interactive TUI filter (like fzf): type to filter, Enter to print selection")
     flag.BoolVar(&opts.showVersion, "version", false, "Print version information and exit")
     flag.Parse()
+
+    // Default: if no flags provided, start in interactive mode
+    if len(os.Args) == 1 {
+        opts.interactive = true
+    }
+
+    // If values are requested and stdout is a terminal, prefer interactive TUI
+    // (so `fvf -values` launches TUI with lazy preview instead of dumping everything)
+    if opts.printValues && term.IsTerminal(int(os.Stdout.Fd())) && !opts.jsonOut {
+        opts.interactive = true
+    }
 
     if opts.showVersion {
         fmt.Printf("fvf %s (commit %s, built %s)\n", version, commit, date)
@@ -189,6 +202,7 @@ func usageAndExit(msg string) {
     }
     fmt.Fprintf(os.Stderr, "\nfvf %s (commit %s, built %s)\n\n", version, commit, date)
     fmt.Fprintf(os.Stderr, "Usage: fvf [-path <mount/inner/>] [flags]\n\n")
+    fmt.Fprintf(os.Stderr, "Note: Running with no flags starts Interactive mode by default.\n\n")
     flag.PrintDefaults()
     os.Exit(2)
 }
