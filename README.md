@@ -142,6 +142,12 @@ Override version metadata at build:
 VERSION=1.2.3 COMMIT=$(git rev-parse --short HEAD) DATE=$(date -u +%Y-%m-%d) make build
 ```
 
+## Macos security override
+
+```bash
+sudo xattr -dr com.apple.quarantine dist/fvf
+```
+
 ## Notes
 
 - TTY-aware behavior for `-values`:
