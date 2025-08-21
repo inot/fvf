@@ -52,153 +52,30 @@ func main() {
         fatal(err)
     }
 
-    // Quick connectivity check before doing any work
     if err := search.CheckConnection(ctx, client); err != nil {
         fmt.Fprintln(os.Stderr, "Cannot connect to Vault:", err)
         os.Exit(1)
     }
 
-    var matcher *regexp.Regexp
-    if opts.match != "" {
-        matcher, err = regexp.Compile(opts.match)
-        if err != nil {
-            fatal(err)
-        }
+    matcher, err := buildMatcher(opts.match)
+    if err != nil {
+        fatal(err)
     }
 
-    var items []search.FoundItem
-    if strings.TrimSpace(opts.startPath) == "" && len(opts.paths) == 0 {
-        // Search across all KV mounts
-        mounts, err := client.Sys().ListMountsWithContext(ctx)
-        if err != nil {
-            var respErr *vault.ResponseError
-            if errors.As(err, &respErr) && respErr.StatusCode == 403 {
-                printGreenHint("fvf: permission denied listing mounts (sys/mounts). Use -path to target a known mount. If your mount is KV v1, add -kv1.")
-                fmt.Fprintln(os.Stderr, "Vault error:", err)
-                os.Exit(1)
-            }
-            printGreenHint("fvf: cannot list mounts (provide -path to search a known mount). If your mount is KV v1, add -kv1.")
-            fmt.Fprintln(os.Stderr, "Vault/Client error:", err)
-            os.Exit(1)
-        }
-        for mntPath, m := range mounts {
-            if m.Type != "kv" {
-                continue
-            }
-            mnt := strings.TrimSuffix(mntPath, "/")
-            kv2 := opts.kv2
-            if opts.kv1 {
-                kv2 = false
-            } else if !opts.forceKV2 {
-                if v, ok := m.Options["version"]; ok && v == "2" {
-                    kv2 = true
-                } else {
-                    kv2 = false
-                }
-            }
-            // In interactive mode, avoid fetching values during the walk; fetch lazily in the UI
-            valuesDuringWalk := opts.printValues && !opts.interactive
-            sub, err := search.WalkVault(ctx, client.Logical(), mnt, kv2, opts.maxDepth, matcher, valuesDuringWalk)
-            if err != nil {
-                fatal(fmt.Errorf("error walking mount %s: %w", mnt, err))
-            }
-            items = append(items, sub...)
-        }
-    } else if len(opts.paths) > 0 {
-        // Iterate over provided paths
-        for _, p := range opts.paths {
-            kv2 := opts.kv2
-            if opts.kv1 {
-                kv2 = false
-            } else if !opts.forceKV2 {
-                if v, ok := search.DetectKV2(ctx, client, p); ok {
-                    kv2 = v
-                }
-            }
-            valuesDuringWalk := opts.printValues && !opts.interactive
-            sub, err := search.WalkVault(ctx, client.Logical(), p, kv2, opts.maxDepth, matcher, valuesDuringWalk)
-            if err != nil {
-                fatal(fmt.Errorf("error walking path %s: %w", p, err))
-            }
-            items = append(items, sub...)
-        }
-    } else {
-        // Determine KV version if not forced for the specific path
-        kv2 := opts.kv2
-        if opts.kv1 {
-            kv2 = false
-        } else if !opts.forceKV2 {
-            if v, ok := search.DetectKV2(ctx, client, opts.startPath); ok {
-                kv2 = v
-            }
-        }
-        valuesDuringWalk := opts.printValues && !opts.interactive
-        items, err = search.WalkVault(ctx, client.Logical(), opts.startPath, kv2, opts.maxDepth, matcher, valuesDuringWalk)
-        if err != nil {
-            fatal(err)
-        }
+    items, err := collectItems(ctx, client, opts, matcher)
+    if err != nil {
+        fatal(err)
     }
 
     if opts.interactive {
-        // Lazy value fetcher used by the preview pane and Enter output when -values is set
-        fetcher := func(path string) (string, error) {
-            // Use a fresh per-request context to avoid the top-level timeout
-            // expiring during long interactive sessions. Keep it reasonably short.
-            perReqTimeout := 15 * time.Second
-
-            attempt := func() (interface{}, error) {
-                reqCtx, cancel := context.WithTimeout(context.Background(), perReqTimeout)
-                defer cancel()
-
-                mnt, inner := search.SplitMount(path)
-                // Determine kv2 for this mount/path using the fresh context
-                kv2 := opts.kv2
-                if opts.kv1 {
-                    kv2 = false
-                } else if !opts.forceKV2 {
-                    if v, ok := search.DetectKV2(reqCtx, client, mnt); ok {
-                        kv2 = v
-                    }
-                }
-                return search.ReadSecret(reqCtx, client.Logical(), mnt, inner, kv2)
-            }
-
-            val, err := attempt()
-            if err != nil {
-                // If the per-request context hit a deadline, retry once with a new context.
-                if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
-                    val, err = attempt()
-                }
-            }
-            if err != nil {
-                return "", err
-            }
-            b, _ := json.MarshalIndent(val, "", "  ")
-            return string(b), nil
-        }
-        // Launch interactive UI similar to fzf: type to filter, up/down to navigate, Enter to select.
-        if err := ui.Run(items, opts.printValues, fetcher); err != nil {
+        if err := runInteractive(items, opts, client); err != nil {
             fatal(err)
         }
         return
     }
 
-    if opts.jsonOut {
-        enc := json.NewEncoder(os.Stdout)
-        enc.SetIndent("", "  ")
-        if err := enc.Encode(items); err != nil {
-            fatal(err)
-        }
-        return
-    }
-
-    for _, it := range items {
-        if opts.printValues {
-            b, _ := json.Marshal(it.Value)
-            fmt.Printf("%s = %s\n", it.Path, string(b))
-        } else {
-            fmt.Println(it.Path)
-        }
+    if err := printItems(items, opts); err != nil {
+        fatal(err)
     }
 }
 
@@ -276,6 +153,152 @@ func usageAndExit(msg string) {
 func fatal(err error) {
     fmt.Fprintln(os.Stderr, "Error:", err)
     os.Exit(1)
+}
+
+// buildMatcher compiles a regexp pattern if provided, else returns nil.
+func buildMatcher(pattern string) (*regexp.Regexp, error) {
+    if strings.TrimSpace(pattern) == "" {
+        return nil, nil
+    }
+    return regexp.Compile(pattern)
+}
+
+// valuesDuringWalk returns whether values should be fetched during Walk.
+// In interactive mode we avoid fetching to keep the UI responsive.
+func valuesDuringWalk(opts options) bool {
+    return opts.printValues && !opts.interactive
+}
+
+// decideKV2ForMountMeta determines kv2 based on CLI flags and mount metadata.
+// If -kv1 is set -> false. If -force-kv2 is set -> opts.kv2. Otherwise use mount Options["version"] == "2".
+func decideKV2ForMountMeta(opts options, mountOptions map[string]string) bool {
+    if opts.kv1 {
+        return false
+    }
+    if opts.forceKV2 {
+        return opts.kv2
+    }
+    if v, ok := mountOptions["version"]; ok && v == "2" {
+        return true
+    }
+    return false
+}
+
+// decideKV2ForPath uses DetectKV2 unless forced by flags.
+func decideKV2ForPath(ctx context.Context, client *vault.Client, start string, opts options) bool {
+    if opts.kv1 {
+        return false
+    }
+    if opts.forceKV2 {
+        return opts.kv2
+    }
+    if client == nil {
+        return opts.kv2
+    }
+    if v, ok := search.DetectKV2(ctx, client, start); ok {
+        return v
+    }
+    return opts.kv2
+}
+
+// collectItems routes to the correct collection strategy.
+func collectItems(ctx context.Context, client *vault.Client, opts options, matcher *regexp.Regexp) ([]search.FoundItem, error) {
+    if strings.TrimSpace(opts.startPath) == "" && len(opts.paths) == 0 {
+        return collectAcrossAllMounts(ctx, client, opts, matcher)
+    }
+    if len(opts.paths) > 0 {
+        return collectForPaths(ctx, client, opts, matcher)
+    }
+    return collectForSinglePath(ctx, client, opts, matcher)
+}
+
+func collectAcrossAllMounts(ctx context.Context, client *vault.Client, opts options, matcher *regexp.Regexp) ([]search.FoundItem, error) {
+    mounts, err := client.Sys().ListMountsWithContext(ctx)
+    if err != nil {
+        var respErr *vault.ResponseError
+        if errors.As(err, &respErr) && respErr.StatusCode == 403 {
+            printGreenHint("fvf: permission denied listing mounts (sys/mounts). Use -path to target a known mount. If your mount is KV v1, add -kv1.")
+            fmt.Fprintln(os.Stderr, "Vault error:", err)
+            os.Exit(1)
+        }
+        printGreenHint("fvf: cannot list mounts (provide -path to search a known mount). If your mount is KV v1, add -kv1.")
+        fmt.Fprintln(os.Stderr, "Vault/Client error:", err)
+        os.Exit(1)
+    }
+    var items []search.FoundItem
+    for mntPath, m := range mounts {
+        if m.Type != "kv" {
+            continue
+        }
+        mnt := strings.TrimSuffix(mntPath, "/")
+        kv2 := decideKV2ForMountMeta(opts, m.Options)
+        sub, err := search.WalkVault(ctx, client.Logical(), mnt, kv2, opts.maxDepth, matcher, valuesDuringWalk(opts))
+        if err != nil {
+            return nil, fmt.Errorf("error walking mount %s: %w", mnt, err)
+        }
+        items = append(items, sub...)
+    }
+    return items, nil
+}
+
+func collectForPaths(ctx context.Context, client *vault.Client, opts options, matcher *regexp.Regexp) ([]search.FoundItem, error) {
+    var items []search.FoundItem
+    for _, p := range opts.paths {
+        kv2 := decideKV2ForPath(ctx, client, p, opts)
+        sub, err := search.WalkVault(ctx, client.Logical(), p, kv2, opts.maxDepth, matcher, valuesDuringWalk(opts))
+        if err != nil {
+            return nil, fmt.Errorf("error walking path %s: %w", p, err)
+        }
+        items = append(items, sub...)
+    }
+    return items, nil
+}
+
+func collectForSinglePath(ctx context.Context, client *vault.Client, opts options, matcher *regexp.Regexp) ([]search.FoundItem, error) {
+    kv2 := decideKV2ForPath(ctx, client, opts.startPath, opts)
+    return search.WalkVault(ctx, client.Logical(), opts.startPath, kv2, opts.maxDepth, matcher, valuesDuringWalk(opts))
+}
+
+func runInteractive(items []search.FoundItem, opts options, client *vault.Client) error {
+    fetcher := func(p string) (string, error) {
+        perReqTimeout := 15 * time.Second
+        attempt := func() (interface{}, error) {
+            reqCtx, cancel := context.WithTimeout(context.Background(), perReqTimeout)
+            defer cancel()
+            mnt, inner := search.SplitMount(p)
+            kv2 := decideKV2ForPath(reqCtx, client, mnt, opts)
+            return search.ReadSecret(reqCtx, client.Logical(), mnt, inner, kv2)
+        }
+        val, err := attempt()
+        if err != nil {
+            if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
+                val, err = attempt()
+            }
+        }
+        if err != nil {
+            return "", err
+        }
+        b, _ := json.MarshalIndent(val, "", "  ")
+        return string(b), nil
+    }
+    return ui.Run(items, opts.printValues, fetcher)
+}
+
+func printItems(items []search.FoundItem, opts options) error {
+    if opts.jsonOut {
+        enc := json.NewEncoder(os.Stdout)
+        enc.SetIndent("", "  ")
+        return enc.Encode(items)
+    }
+    for _, it := range items {
+        if opts.printValues {
+            b, _ := json.Marshal(it.Value)
+            fmt.Printf("%s = %s\n", it.Path, string(b))
+        } else {
+            fmt.Println(it.Path)
+        }
+    }
+    return nil
 }
 
 // printGreenHint prints a friendly fvf hint message in green when stderr is a TTY,

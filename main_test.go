@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"os"
 	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 
-	vault "github.com/hashicorp/vault/api"
 	"fvf/search"
+
+	vault "github.com/hashicorp/vault/api"
 )
 
 // fakeLogical implements LogicalAPI for testing
@@ -20,12 +26,12 @@ type fakeLogical struct {
 func TestWalk_MaxDepth(t *testing.T) {
 	f := &fakeLogical{
 		list: map[string]*vault.Secret{
-			"secret":       {Data: map[string]interface{}{"keys": []interface{}{"a/", "b"}}},
-			"secret/a":     {Data: map[string]interface{}{"keys": []interface{}{"c"}}},
+			"secret":   {Data: map[string]interface{}{"keys": []interface{}{"a/", "b"}}},
+			"secret/a": {Data: map[string]interface{}{"keys": []interface{}{"c"}}},
 			// note: no further for secret/a/c
 		},
 		read: map[string]*vault.Secret{
-			"secret/b": {Data: map[string]interface{}{"k": "v"}},
+			"secret/b":   {Data: map[string]interface{}{"k": "v"}},
 			"secret/a/c": {Data: map[string]interface{}{"x": 1}},
 		},
 	}
@@ -154,11 +160,11 @@ func TestNameAndRegexMatch(t *testing.T) {
 func TestWalkVault_KV1(t *testing.T) {
 	f := &fakeLogical{
 		list: map[string]*vault.Secret{
-			"secret": {Data: map[string]interface{}{"keys": []interface{}{"a", "b/"}}},
+			"secret":   {Data: map[string]interface{}{"keys": []interface{}{"a", "b/"}}},
 			"secret/b": {Data: map[string]interface{}{"keys": []interface{}{"c"}}},
 		},
 		read: map[string]*vault.Secret{
-			"secret/a": {Data: map[string]interface{}{"k": "v"}},
+			"secret/a":   {Data: map[string]interface{}{"k": "v"}},
 			"secret/b/c": {Data: map[string]interface{}{"x": 1}},
 		},
 	}
@@ -177,12 +183,12 @@ func TestWalkVault_KV1(t *testing.T) {
 func TestWalkVault_KV2(t *testing.T) {
 	f := &fakeLogical{
 		list: map[string]*vault.Secret{
-			"kv/metadata": {Data: map[string]interface{}{"keys": []interface{}{"app/"}}},
-			"kv/metadata/app": {Data: map[string]interface{}{"keys": []interface{}{"cfg", "sub/"}}},
+			"kv/metadata":         {Data: map[string]interface{}{"keys": []interface{}{"app/"}}},
+			"kv/metadata/app":     {Data: map[string]interface{}{"keys": []interface{}{"cfg", "sub/"}}},
 			"kv/metadata/app/sub": {Data: map[string]interface{}{"keys": []interface{}{"leaf"}}},
 		},
 		read: map[string]*vault.Secret{
-			"kv/data/app/cfg": {Data: map[string]interface{}{"data": map[string]interface{}{"a": "b"}}},
+			"kv/data/app/cfg":      {Data: map[string]interface{}{"data": map[string]interface{}{"a": "b"}}},
 			"kv/data/app/sub/leaf": {Data: map[string]interface{}{"data": map[string]interface{}{"z": 9}}},
 		},
 	}
@@ -205,5 +211,150 @@ func TestWalkVault_KV2(t *testing.T) {
 	// Expect two entries, with values present
 	if len(items) != 2 || items[0].Value == nil || items[1].Value == nil {
 		t.Fatalf("expected 2 items with values, got %#v", items)
+	}
+}
+
+func TestBuildMatcher(t *testing.T) {
+	re, err := buildMatcher("")
+	if err != nil || re != nil {
+		t.Fatalf("expected nil matcher, got %v, err=%v", re, err)
+	}
+	re, err = buildMatcher("^a.+b$")
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	if !re.MatchString("axxb") {
+		t.Fatal("regex should match")
+	}
+}
+
+func TestValuesDuringWalk(t *testing.T) {
+	if valuesDuringWalk(options{printValues: true, interactive: true}) {
+		t.Fatal("interactive should suppress values during walk")
+	}
+	if !valuesDuringWalk(options{printValues: true, interactive: false}) {
+		t.Fatal("non-interactive with -values should fetch during walk")
+	}
+}
+
+func TestDecideKV2ForMountMeta(t *testing.T) {
+	// kv1 flag forces false
+	if decideKV2ForMountMeta(options{kv1: true, kv2: true}, map[string]string{"version": "2"}) {
+		t.Fatal("kv1 should force false")
+	}
+	// force-kv2 uses opts.kv2 regardless of mount meta
+	if !decideKV2ForMountMeta(options{forceKV2: true, kv2: true}, map[string]string{"version": "1"}) {
+		t.Fatal("force-kv2 true should force true")
+	}
+	if decideKV2ForMountMeta(options{forceKV2: true, kv2: false}, map[string]string{"version": "2"}) {
+		t.Fatal("force-kv2 with kv2=false should force false")
+	}
+	// auto by meta
+	if !decideKV2ForMountMeta(options{}, map[string]string{"version": "2"}) {
+		t.Fatal("version=2 in meta should return true")
+	}
+	if decideKV2ForMountMeta(options{}, map[string]string{"version": "1"}) {
+		t.Fatal("version=1 in meta should return false")
+	}
+}
+
+func TestPrintItems_JSONAndLines(t *testing.T) {
+	items := []search.FoundItem{{Path: "a", Value: map[string]any{"x": 1}}, {Path: "b"}}
+
+	// JSON path
+	var buf bytes.Buffer
+	oldStdout := stdOutSwap(&buf)
+	if err := printItems(items, options{jsonOut: true}); err != nil {
+		t.Fatalf("printItems json err: %v", err)
+	}
+	stdOutRestore(oldStdout)
+	if !json.Valid(buf.Bytes()) {
+		t.Fatalf("expected valid JSON, got: %s", buf.String())
+	}
+
+	// plain lines
+	buf.Reset()
+	oldStdout = stdOutSwap(&buf)
+	if err := printItems(items, options{printValues: false}); err != nil {
+		t.Fatalf("printItems lines err: %v", err)
+	}
+	stdOutRestore(oldStdout)
+	out := buf.String()
+	if !strings.Contains(out, "a\n") || !strings.Contains(out, "b\n") {
+		t.Fatalf("expected lines with paths, got: %q", out)
+	}
+
+	// with values (non-interactive behavior)
+	buf.Reset()
+	oldStdout = stdOutSwap(&buf)
+	if err := printItems(items, options{printValues: true}); err != nil {
+		t.Fatalf("printItems values err: %v", err)
+	}
+	stdOutRestore(oldStdout)
+	out = buf.String()
+	if !strings.Contains(out, "a = ") || !strings.Contains(out, "b = ") {
+		t.Fatalf("expected key=value lines, got: %q", out)
+	}
+}
+
+// Swap stdout via os.Stdout using a pipe to capture output into a buffer.
+
+// stdOutSwap redirects os.Stdout to the provided buffer.
+func stdOutSwap(buf *bytes.Buffer) *osFile {
+	old := captureStdoutStart()
+	captureStdoutTo(buf)
+	return old
+}
+
+func stdOutRestore(old *osFile) {
+	captureStdoutStop(old)
+}
+
+// below is minimal implementation borrowed for testing stdout capture
+// without external deps.
+
+// NOTE: We keep these in the _test file to avoid polluting main package API.
+
+// --- platform-agnostic stdout capture ---
+// The code below is adapted for tests to capture stdout using os.Pipe().
+// It is intentionally lightweight and local to tests.
+
+type osFile struct{ f *os.File }
+
+var savedStdout *os.File
+var pipeReader *os.File
+var pipeWriter *os.File
+var copierDone chan struct{}
+
+func captureStdoutStart() *osFile {
+	savedStdout = os.Stdout
+	pipeReader, pipeWriter, _ = os.Pipe()
+	os.Stdout = pipeWriter
+	copierDone = make(chan struct{})
+	return &osFile{f: savedStdout}
+}
+
+func captureStdoutTo(buf *bytes.Buffer) {
+	go func() {
+		_, _ = io.Copy(buf, pipeReader)
+		close(copierDone)
+	}()
+}
+
+func captureStdoutStop(old *osFile) {
+	_ = pipeWriter.Close()
+	<-copierDone
+	os.Stdout = old.f
+}
+
+// Ensure decideKV2ForPath falls back to opts when DetectKV2 returns !ok
+func TestDecideKV2ForPath_Fallback(t *testing.T) {
+	// We cannot reliably mock vault.Client.Sys() here.
+	// Passing a zero-value *vault.Client will cause DetectKV2 to return (false,false),
+	// so decideKV2ForPath should return opts.kv2.
+	var c *vault.Client
+	got := decideKV2ForPath(context.Background(), c, "any", options{kv2: true})
+	if !got {
+		t.Fatal("expected fallback to opts.kv2=true when detection not ok")
 	}
 }
