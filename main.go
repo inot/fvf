@@ -3,6 +3,7 @@ package main
 import (
     "context"
     "encoding/json"
+    "errors"
     "flag"
     "fmt"
     "os"
@@ -13,6 +14,7 @@ import (
     "fvf/search"
     "fvf/ui"
     "golang.org/x/term"
+    vault "github.com/hashicorp/vault/api"
 )
 
 // Version information. Overwrite via -ldflags "-X main.version=... -X main.commit=... -X main.date=..."
@@ -25,6 +27,7 @@ var (
 type options struct {
     startPath   string
     kv2         bool
+    kv1         bool
     forceKV2    bool
     match       string
     namePart    string
@@ -67,7 +70,15 @@ func main() {
         // Search across all KV mounts
         mounts, err := client.Sys().ListMountsWithContext(ctx)
         if err != nil {
-            fatal(fmt.Errorf("cannot list mounts (provide -path to search a known mount): %w", err))
+            var respErr *vault.ResponseError
+            if errors.As(err, &respErr) && respErr.StatusCode == 403 {
+                printGreenHint("fvf: permission denied listing mounts (sys/mounts). Use -path to target a known mount. If your mount is KV v1, add -kv1.")
+                fmt.Fprintln(os.Stderr, "Vault error:", err)
+                os.Exit(1)
+            }
+            printGreenHint("fvf: cannot list mounts (provide -path to search a known mount). If your mount is KV v1, add -kv1.")
+            fmt.Fprintln(os.Stderr, "Vault/Client error:", err)
+            os.Exit(1)
         }
         for mntPath, m := range mounts {
             if m.Type != "kv" {
@@ -75,7 +86,9 @@ func main() {
             }
             mnt := strings.TrimSuffix(mntPath, "/")
             kv2 := opts.kv2
-            if !opts.forceKV2 {
+            if opts.kv1 {
+                kv2 = false
+            } else if !opts.forceKV2 {
                 if v, ok := m.Options["version"]; ok && v == "2" {
                     kv2 = true
                 } else {
@@ -93,7 +106,9 @@ func main() {
     } else {
         // Determine KV version if not forced for the specific path
         kv2 := opts.kv2
-        if !opts.forceKV2 {
+        if opts.kv1 {
+            kv2 = false
+        } else if !opts.forceKV2 {
             if v, ok := search.DetectKV2(ctx, client, opts.startPath); ok {
                 kv2 = v
             }
@@ -111,7 +126,9 @@ func main() {
             mnt, inner := search.SplitMount(path)
             // Determine kv2 for this mount/path
             kv2 := opts.kv2
-            if !opts.forceKV2 {
+            if opts.kv1 {
+                kv2 = false
+            } else if !opts.forceKV2 {
                 if v, ok := search.DetectKV2(ctx, client, mnt); ok {
                     kv2 = v
                 }
@@ -159,7 +176,8 @@ func parseFlags() options {
         flag.PrintDefaults()
     }
     flag.StringVar(&opts.startPath, "path", "", "Start path to recurse, e.g. secret/ or secret/app/ (default: all KV mounts)")
-    flag.BoolVar(&opts.kv2, "kv2", false, "Assume KV v2 (used if detection fails)")
+    flag.BoolVar(&opts.kv2, "kv2", true, "Assume KV v2 (default). If unsure, leave as-is.")
+    flag.BoolVar(&opts.kv1, "kv1", false, "Assume KV v1 (overrides -kv2 and skips detection)")
     flag.BoolVar(&opts.forceKV2, "force-kv2", false, "Force KV v2 and skip auto-detection")
     flag.StringVar(&opts.match, "match", "", "Optional regex to match full logical path")
     flag.StringVar(&opts.namePart, "name", "", "Case-insensitive substring to match secret name (last segment)")
@@ -210,4 +228,15 @@ func usageAndExit(msg string) {
 func fatal(err error) {
     fmt.Fprintln(os.Stderr, "Error:", err)
     os.Exit(1)
+}
+
+// printGreenHint prints a friendly fvf hint message in green when stderr is a TTY,
+// and as plain text otherwise. The Vault/raw error should be printed separately.
+func printGreenHint(msg string) {
+    if term.IsTerminal(int(os.Stderr.Fd())) {
+        // ANSI green
+        fmt.Fprintf(os.Stderr, "\x1b[32m%s\x1b[0m\n", msg)
+        return
+    }
+    fmt.Fprintln(os.Stderr, msg)
 }

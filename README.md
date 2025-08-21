@@ -106,7 +106,8 @@ Check version:
 ### Flags
 
 - -path string          Start path to recurse (default: all KV mounts)
-- -kv2                  Assume KV v2 (used if detection fails)
+- -kv2                  Assume KV v2 (default). If unsure, leave as-is
+- -kv1                  Assume KV v1 (overrides -kv2 and skips detection)
 - -force-kv2            Force KV v2 and skip auto-detection
 - -match string         Regex on full logical path
 - -name string          Substring match on last path segment
@@ -136,6 +137,19 @@ VERSION=1.2.3 COMMIT=$(git rev-parse --short HEAD) DATE=$(date -u +%Y-%m-%d) mak
   - TTY stdout → TUI with preview
   - Non-TTY stdout → prints values for all matches
 - KV v2 detection per mount unless `-force-kv2`.
+
+- Limited permissions (403 on `sys/mounts`): If your token cannot read
+  `sys/mounts`, `fvf` cannot auto-discover mounts when no `-path` is given.
+  Use a known mount with `-path`. KV v2 is the default; if your mount is KV v1,
+  add `-kv1`:
+
+  ```sh
+  # KV v2 (default)
+  fvf -path kv/ -values
+
+  # KV v1
+  fvf -path secret/ -kv1 -values
+  ```
 
 ## License
 

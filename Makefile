@@ -38,24 +38,24 @@ $(DIST):
 
 build: $(DIST)
 	@echo "Building host binary..."
-	@CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME) $(PKG)
+	@CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -buildmode=pie -trimpath -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME) $(PKG)
 	@echo "Built $(DIST)/$(APP_NAME)"
 
 macos-arm64: $(DIST)
 	@echo "Building macOS arm64..."
-	@GOOS=darwin GOARCH=arm64 CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME)-darwin-arm64 $(PKG)
+	@GOOS=darwin GOARCH=arm64 CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -buildmode=pie -trimpath -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME)-darwin-arm64 $(PKG)
 
 linux-amd64: $(DIST)
 	@echo "Building Linux amd64..."
-	@GOOS=linux GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME)-linux-amd64 $(PKG)
+	@GOOS=linux GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -buildmode=pie -trimpath -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME)-linux-amd64 $(PKG)
 
 linux-arm64: $(DIST)
 	@echo "Building Linux arm64..."
-	@GOOS=linux GOARCH=arm64 CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME)-linux-arm64 $(PKG)
+	@GOOS=linux GOARCH=arm64 CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -buildmode=pie -trimpath -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME)-linux-arm64 $(PKG)
 
 windows-amd64: $(DIST)
 	@echo "Building Windows amd64..."
-	@GOOS=windows GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME)-windows-amd64.exe $(PKG)
+	@GOOS=windows GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -buildmode=pie -trimpath -ldflags "$(LDFLAGS)" -o $(DIST)/$(APP_NAME)-windows-amd64.exe $(PKG)
 
 build-all: macos-arm64 linux-amd64 linux-arm64 windows-amd64
 	@echo "All cross-compiled binaries are in $(DIST)/"
