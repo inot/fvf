@@ -142,17 +142,34 @@ func main() {
     if opts.interactive {
         // Lazy value fetcher used by the preview pane and Enter output when -values is set
         fetcher := func(path string) (string, error) {
-            mnt, inner := search.SplitMount(path)
-            // Determine kv2 for this mount/path
-            kv2 := opts.kv2
-            if opts.kv1 {
-                kv2 = false
-            } else if !opts.forceKV2 {
-                if v, ok := search.DetectKV2(ctx, client, mnt); ok {
-                    kv2 = v
+            // Use a fresh per-request context to avoid the top-level timeout
+            // expiring during long interactive sessions. Keep it reasonably short.
+            perReqTimeout := 15 * time.Second
+
+            attempt := func() (interface{}, error) {
+                reqCtx, cancel := context.WithTimeout(context.Background(), perReqTimeout)
+                defer cancel()
+
+                mnt, inner := search.SplitMount(path)
+                // Determine kv2 for this mount/path using the fresh context
+                kv2 := opts.kv2
+                if opts.kv1 {
+                    kv2 = false
+                } else if !opts.forceKV2 {
+                    if v, ok := search.DetectKV2(reqCtx, client, mnt); ok {
+                        kv2 = v
+                    }
+                }
+                return search.ReadSecret(reqCtx, client.Logical(), mnt, inner, kv2)
+            }
+
+            val, err := attempt()
+            if err != nil {
+                // If the per-request context hit a deadline, retry once with a new context.
+                if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
+                    val, err = attempt()
                 }
             }
-            val, err := search.ReadSecret(ctx, client.Logical(), mnt, inner, kv2)
             if err != nil {
                 return "", err
             }
