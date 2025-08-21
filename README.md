@@ -57,7 +57,7 @@ Check version:
   ./fvf
   ```
 
-  - Type to filter; Up/Down to navigate; Enter prints selection.
+  - Type to filter; Up/Down to navigate; Enter prints secret value.
   - Right pane shows value preview (when available).
 
 - Interactive with values:
@@ -171,3 +171,7 @@ sudo xattr -dr com.apple.quarantine dist/fvf
 ## License
 
 MIT
+
+## Changes
+
+- Interactive: pressing Enter now prints only the secret value (JSON), not the path or "path = value".

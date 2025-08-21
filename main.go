@@ -100,7 +100,7 @@ func parseFlags() options {
     flag.IntVar(&opts.maxDepth, "max-depth", 0, "Maximum recursion depth (0 = unlimited)")
     flag.BoolVar(&opts.jsonOut, "json", false, "Output JSON array instead of lines")
     flag.DurationVar(&opts.timeout, "timeout", 30*time.Second, "Total timeout for the operation")
-    flag.BoolVar(&opts.interactive, "interactive", false, "Interactive TUI filter (like fzf): type to filter, Enter to print selection")
+    flag.BoolVar(&opts.interactive, "interactive", false, "Interactive TUI filter (like fzf): type to filter, Enter prints secret value")
     flag.BoolVar(&opts.showVersion, "version", false, "Print version information and exit")
     flag.Parse()
 

@@ -29,7 +29,12 @@ func Run(items []search.FoundItem, printValues bool, fetcher ValueFetcher) error
 	if err := s.Init(); err != nil {
 		return err
 	}
-	defer s.Fini()
+	finished := false
+	defer func() {
+		if !finished {
+			s.Fini()
+		}
+	}()
 
 	query := ""
 	filtered := make([]search.FoundItem, len(items))
@@ -169,31 +174,31 @@ func Run(items []search.FoundItem, printValues bool, fetcher ValueFetcher) error
 					return nil
 				}
 				it := filtered[cursor]
-				if printValues {
-					// Prefer cached/fetched preview if available; otherwise fall back to inline value
-					out := ""
-					if fetcher != nil {
-						if v, ok := previewCache[it.Path]; ok {
+				// Always print only the secret value on Enter, not the path.
+				out := ""
+				if fetcher != nil {
+					if v, ok := previewCache[it.Path]; ok {
+						out = v
+					} else {
+						if v, err := fetcher(it.Path); err == nil {
+							previewCache[it.Path] = v
 							out = v
 						} else {
-							if v, err := fetcher(it.Path); err == nil {
-								previewCache[it.Path] = v
-								out = v
-							} else {
-								out = fmt.Sprintf("(error fetching values) %v", err)
-							}
+							out = fmt.Sprintf("(error fetching values) %v", err)
 						}
-					} else if it.Value != nil {
-						b, _ := json.Marshal(it.Value)
-						out = string(b)
 					}
-					if out == "" {
-						out = "{}"
-					}
-					fmt.Printf("%s = %s\n", it.Path, out)
-				} else {
-					fmt.Println(it.Path)
+				} else if it.Value != nil {
+					b, _ := json.Marshal(it.Value)
+					out = string(b)
 				}
+				if out == "" {
+					out = "{}"
+				}
+				// Ensure we leave the alternate screen before printing,
+				// otherwise the output may not persist.
+				finished = true
+				s.Fini()
+				fmt.Println(out)
 				return nil
 			case tcell.KeyUp:
 				if cursor > 0 {
