@@ -7,22 +7,22 @@ on:
   pull_request:
 
 jobs:
-  prepare-src:
-    runs-on: ubuntu-latest
-    container:
-      image: node:20-bullseye
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  # prepare-src:
+  #   runs-on: ubuntu-latest
+  #   container:
+  #     image: node:20-bullseye
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
 
-      - name: Pack workspace as tar (optional)
-        run: tar -czf src.tgz .
+  #     - name: Pack workspace as tar (optional)
+  #       run: tar -czf src.tgz .
 
-      - name: Upload source
-        uses: actions/upload-artifact@v4
-        with:
-          name: src
-          path: src.tgz
+  #     - name: Upload source
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: src
+  #         path: src.tgz
 
   build-and-package:
     runs-on: ubuntu-latest
@@ -30,6 +30,8 @@ jobs:
     container:
       image: golang:1.22-bullseye
     steps:
+      - name: list
+        run: ls -la
       - name: Install prerequisites
         run: |
           apt-get update
