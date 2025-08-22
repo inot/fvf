@@ -28,10 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: prepare-src
     container:
-      image: golang:1.22-bullseye
+      image: golang:latest
     steps:
-      - name: list
-        run: ls -la
       - name: Install prerequisites
         run: |
           apt-get update
