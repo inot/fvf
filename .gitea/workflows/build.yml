@@ -3,7 +3,7 @@ name: CI - Echo Build Message
 on:
   push:
     branches:
-      - 'master'
+      - 'main'
   pull_request:
 
 jobs:
