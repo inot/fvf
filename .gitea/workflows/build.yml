@@ -26,7 +26,7 @@ jobs:
 
   build-and-package:
     runs-on: ubuntu-latest
-    needs: prepare-src
+    # needs: prepare-src
     container:
       image: golang:1.22-bullseye
     steps:
