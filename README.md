@@ -32,46 +32,7 @@ export VAULT_TOKEN="...your token..."
 ./fvf -interactive
 ```
 
-## Requirements for Build
-
-- Go 1.20+ (module currently targets Go 1.24)
-
-## Build
-
-- Host build:
-
-  ```sh
-  make build
-  ```
-
-  Outputs: `dist/fvf`
-
-- Cross-compile (macOS arm64, Linux amd64/arm64, Windows amd64):
-
-  ```sh
-  make build-all
-  ```
-
-  Outputs in `dist/`:
-  - `fvf-darwin-arm64`
-  - `fvf-linux-amd64`
-  - `fvf-linux-arm64`
-  - `fvf-windows-amd64.exe`
-
-## Versioning
-
-- If [./version] exists, its contents define the version (whitespace trimmed; trailing dots removed).
-- Else falls back to `git describe`, else `0.1.0`.
-- Build embeds:
-  - `main.version`, `main.commit`, `main.date`
-
-Check version:
-
-```sh
-./fvf -version
-```
-
-## Usage
+### Advanced Usage
 
 - No flags: interactive TUI
 
@@ -156,7 +117,7 @@ Check version:
   ./fvf -max-depth 2 -timeout 45s
   ```
 
-### Flags
+#### Flags
 
 - -path string          Start path to recurse (default: all KV mounts)
 - -paths string         Comma-separated list of start paths (e.g., kv/app1/,kv/app2/)
@@ -171,6 +132,45 @@ Check version:
 - -timeout duration     Total timeout (default 30s)
 - -interactive          Force interactive TUI (interactive streams results by default)
 - -version             Print version and exit
+
+## Requirements for Build
+
+- Go 1.20+ (module currently targets Go 1.24)
+
+## Build
+
+- Host build:
+
+  ```sh
+  make build
+  ```
+
+  Outputs: `dist/fvf`
+
+- Cross-compile (macOS arm64, Linux amd64/arm64, Windows amd64):
+
+  ```sh
+  make build-all
+  ```
+
+  Outputs in `dist/`:
+  - `fvf-darwin-arm64`
+  - `fvf-linux-amd64`
+  - `fvf-linux-arm64`
+  - `fvf-windows-amd64.exe`
+
+## Versioning
+
+- If [./version] exists, its contents define the version (whitespace trimmed; trailing dots removed).
+- Else falls back to `git describe`, else `0.1.0`.
+- Build embeds:
+  - `main.version`, `main.commit`, `main.date`
+
+Check version:
+
+```sh
+./fvf -version
+```
 
 ## Makefile targets
 
