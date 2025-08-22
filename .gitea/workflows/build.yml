@@ -1,9 +1,10 @@
 name: CI - Echo Build Message
-
+# TODO: Create image before main job and use this image for main job
+# TODO: Dont upload artifacts for non main branch or mark it unstable
 on:
   push:
     branches:
-      - 'feature/*'
+      - 'main'
   pull_request:
 
 jobs:
