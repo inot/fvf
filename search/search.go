@@ -185,10 +185,15 @@ func ReadSecret(ctx context.Context, logical LogicalAPI, mount, inner string, kv
 		return nil, fmt.Errorf("no data at %s", readPath)
 	}
 	if kv2 {
+		// In some cases an empty secret may have a nil or missing data field.
+		if raw, exists := sec.Data["data"]; !exists || raw == nil {
+			return map[string]interface{}{}, nil
+		}
 		if data, ok := sec.Data["data"].(map[string]interface{}); ok {
 			return data, nil
 		}
-		return nil, fmt.Errorf("unexpected v2 data shape at %s", readPath)
+		// If the payload isn't a map (unexpected), treat as empty rather than erroring out.
+		return map[string]interface{}{}, nil
 	}
 	return sec.Data, nil
 }
