@@ -12,4 +12,4 @@ jobs:
     steps:
       - name: Show build message
         run: |
-          echo "building..."",
+          echo "building..."
