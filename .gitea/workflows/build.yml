@@ -111,14 +111,15 @@ jobs:
           path: dist
 
       - name: Create Gitea Release and upload assets
-        uses: https://gitea.com/actions/release-action@v1
+        uses: https://gitea.com/actions/gitea-release-action@v1
+        env:
+          NODE_OPTIONS: '--experimental-fetch'
         with:
-          tag: v${{ needs.build-and-package.outputs.version }}
-          title: "fvf v${{ needs.build-and-package.outputs.version }}"
+          server_url: ${{ secrets.GITEASERVERURL }}
+          token: ${{ secrets.GITEATOKEN }}
+          tag_name: v${{ needs.build-and-package.outputs.version }}
+          name: "fvf v${{ needs.build-and-package.outputs.version }}"
           body: |
             Automated release from CI
           files: |
             dist/*.zip
-        env:
-          GITEA_SERVER_URL: ${{ secrets.GITEASERVERURL }}
-          GITEA_TOKEN: ${{ secrets.GITEATOKEN }}
