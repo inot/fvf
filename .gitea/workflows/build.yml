@@ -8,7 +8,7 @@ on:
 
 jobs:
   echo-build:
-    runs-on: ubuntu-latest
+    runs-on: golang
     steps:
       - name: Show build message
         run: |
