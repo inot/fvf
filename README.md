@@ -6,12 +6,15 @@ A fast interactive finder for HashiCorp Vault KV secrets. Think “fzf for Vault
 - Lazy value preview in the right pane.
 - Script-friendly plain or JSON output.
 
+![fvf](img/fvf.gif)
+
 ## Requirements
 
 - Go 1.20+ (module currently targets Go 1.24)
 - HashiCorp Vault access
 - Environment:
   - VAULT_ADDR (e.g., <https://vault.example.com:8200>)
+  -
   - VAULT_TOKEN (or export a token from your auth flow)
 
 ## Install / Build
