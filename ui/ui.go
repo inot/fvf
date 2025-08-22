@@ -261,7 +261,50 @@ func putLineHighlighted(s tcell.Screen, x, y int, text string) {
 	}
 }
 
-// drawPreview renders details for the current selection into a right-side pane.
+func makeSeparator(w int) string {
+	return strings.Repeat("-", w)
+}
+
+func isLikelyJSON(s string) bool {
+	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")
+}
+
+func toKVFromLines(s string) map[string]string {
+	kv := make(map[string]string)
+	for _, ln := range strings.Split(s, "\n") {
+		if kvPair := strings.SplitN(ln, ":", 2); len(kvPair) == 2 {
+			kv[strings.TrimSpace(kvPair[0])] = strings.TrimSpace(kvPair[1])
+		}
+	}
+	return kv
+}
+
+func toKVFromMap(m map[string]interface{}) map[string]string {
+	kv := make(map[string]string)
+	for k, v := range m {
+		kv[k] = fmt.Sprintf("%v", v)
+	}
+	return kv
+}
+
+func renderKVTable(kv map[string]string, w int) []string {
+	lines := make([]string, 0, len(kv))
+	maxK := 0
+	for k := range kv {
+		if len(k) > maxK {
+			maxK = len(k)
+		}
+	}
+	for k, v := range kv {
+		line := fmt.Sprintf("%-*s: %s", maxK, k, v)
+		if runewidth.StringWidth(line) > w {
+			line = runewidth.Truncate(line, w, "…")
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, fetched string) {
 	if cursor < 0 || cursor >= len(filtered) || w <= 0 || h <= 0 {
 		return
@@ -269,13 +312,38 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 	it := filtered[cursor]
 	lines := make([]string, 0, h)
 	lines = append(lines, it.Path)
+	// Separator between path and values
+	if h > 1 {
+		sep := makeSeparator(w)
+		lines = append(lines, sep)
+	}
 	if printValues {
 		if fetched != "" {
-			for _, ln := range strings.Split(fetched, "\n") {
-				lines = append(lines, ln)
+			if isLikelyJSON(fetched) {
+				// Show JSON as-is when in JSON mode
+				for _, ln := range strings.Split(fetched, "\n") {
+					lines = append(lines, ln)
+				}
+			} else {
+				// Try to render a key/value table from fetched lines like "k: v"
+				kv := toKVFromLines(fetched)
+				if len(kv) > 0 {
+					for _, ln := range renderKVTable(kv, w) {
+						lines = append(lines, ln)
+					}
+				} else {
+					for _, ln := range strings.Split(fetched, "\n") {
+						lines = append(lines, ln)
+					}
+				}
 			}
 		} else if it.Value != nil {
-			if b, err := json.MarshalIndent(it.Value, "", "  "); err == nil {
+			if m, ok := it.Value.(map[string]interface{}); ok {
+				kv := toKVFromMap(m)
+				for _, ln := range renderKVTable(kv, w) {
+					lines = append(lines, ln)
+				}
+			} else if b, err := json.MarshalIndent(it.Value, "", "  "); err == nil {
 				for _, ln := range strings.Split(string(b), "\n") {
 					lines = append(lines, ln)
 				}

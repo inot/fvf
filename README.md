@@ -106,9 +106,12 @@ Check version:
 
 - JSON output:
 
-  ```sh
-  ./fvf -json
-  ```
+```sh
+./fvf -json
+```
+
+- On a TTY, `-json` opens the interactive UI and shows pretty-printed JSON in the preview.
+- When stdout is not a TTY (e.g., piping), prints a JSON array to stdout.
 
 - KVv2 control:
 
@@ -132,9 +135,9 @@ Check version:
 - -force-kv2            Force KV v2 and skip auto-detection
 - -match string         Regex on full logical path
 - -name string          Substring match on last path segment
-- -values               Print values (interactive when stdout is a TTY)
+- -values               Print values (interactive preview when stdout is a TTY; raw-friendly output otherwise)
 - -max-depth int        Max recursion depth (0 = unlimited)
-- -json                 Output JSON array
+- -json                 Output JSON array (TTY: opens interactive with JSON preview)
 - -timeout duration     Total timeout (default 30s)
 - -interactive          Force interactive TUI
 - -version             Print version and exit
@@ -191,3 +194,7 @@ MIT
 - Removed `-debug-mounts` flag after validating fallback discovery.
 - Docs updated: usage examples for `-paths`, notes about fallback behavior.
 - Interactive: pressing Enter prints only the secret value (JSON), not the path or "path = value".
+- Values output: print raw string values by default (no JSON escaping) for better copy/paste; complex nested structures still fall back to JSON.
+- Interactive preview: added a separator under the selected path and render values as a two-column Key/Value table when possible for improved readability.
+- JSON preview mode: when `-json` is used on a TTY, the interactive preview shows pretty-printed JSON; non-interactive `-json` output remains unchanged.
+- Interactive trigger: when stdout is a TTY, passing either `-values` or `-json` will launch the interactive UI with a preview pane.
