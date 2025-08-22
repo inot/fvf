@@ -4,7 +4,7 @@ name: CI - Echo Build Message
 on:
   push:
     branches:
-      - 'main'
+      - '**'
   pull_request:
 
 jobs:
@@ -49,6 +49,7 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Package artifacts
+        if: github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -euo pipefail
@@ -74,6 +75,7 @@ jobs:
           [ -f "$DIST/${APP}-windows-amd64.exe" ] && package "$DIST/${APP}-windows-amd64.exe" win64 "${APP}.exe"
 
       - name: Upload build artifacts
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v3
         with:
           name: fvf-zips
@@ -82,6 +84,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     needs: build-and-package
+    if: github.ref == 'refs/heads/main'
     container:
       image: node:16-bullseye
     steps:
