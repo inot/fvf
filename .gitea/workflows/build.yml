@@ -1,0 +1,15 @@
+name: CI - Echo Build Message
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+jobs:
+  echo-build:
+    runs-on: eva_actions
+    steps:
+      - name: Show build message
+        run: |
+          echo "building..."",
