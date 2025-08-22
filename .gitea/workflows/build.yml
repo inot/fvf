@@ -14,11 +14,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Build Docker image
-        run: docker build -t golang-node:latest .
+        run: docker build -t localhost/golang-node:latest .
+
   build-and-package:
     runs-on: ubuntu-latest
     container:
-      image: golang-node:latest
+      image: localhost/golang-node:latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
