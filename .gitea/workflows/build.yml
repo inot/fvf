@@ -1,6 +1,5 @@
 name: CI - Echo Build Message
 # TODO: Create image before main job and use this image for main job
-# TODO: Dont upload artifacts for non main branch or mark it unstable
 on:
   push:
     branches:
@@ -8,18 +7,10 @@ on:
   pull_request:
 
 jobs:
-  build-and-test:
-      runs-on: ubuntu-latest
-      steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Build Docker image
-        run: docker build -t localhost/golang-node:latest .
-
   build-and-package:
     runs-on: ubuntu-latest
     container:
-      image: localhost/golang-node:latest
+      image: golang:latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
