@@ -87,6 +87,13 @@ Check version:
   ./fvf -paths kv/app1/,kv/app2/ -values
   ```
 
+- Listing all KV mounts without explicit -path:
+
+  ```sh
+  # Attempts sys/mounts first, falls back to sys/internal/ui/mounts on 403
+  ./fvf
+  ```
+
 - Name and regex filters:
 
   ```sh
@@ -127,7 +134,7 @@ Check version:
 - -json                 Output JSON array
 - -timeout duration     Total timeout (default 30s)
 - -interactive          Force interactive TUI
-- -version              Print version and exit
+- -version             Print version and exit
 
 ## Makefile targets
 
@@ -153,20 +160,17 @@ sudo xattr -dr com.apple.quarantine dist/fvf
 - TTY-aware behavior for `-values`:
   - TTY stdout → TUI with preview
   - Non-TTY stdout → prints values for all matches
-- KV v2 detection per mount unless `-force-kv2`.
+- KV v2 detection happens per mount unless `-force-kv2`.
+- Limited permissions (403 on `sys/mounts`): `fvf` falls back to `v1/sys/internal/ui/mounts`.
+  If both calls fail, target a known mount with `-path`. KV v2 is default; for KV v1 add `-kv1`:
 
-- Limited permissions (403 on `sys/mounts`): If your token cannot read
-  `sys/mounts`, `fvf` cannot auto-discover mounts when no `-path` is given.
-  Use a known mount with `-path`. KV v2 is the default; if your mount is KV v1,
-  add `-kv1`:
+```sh
+# KV v2 (default)
+fvf -path kv/ -values
 
-  ```sh
-  # KV v2 (default)
-  fvf -path kv/ -values
-
-  # KV v1
-  fvf -path secret/ -kv1 -values
-  ```
+# KV v1
+fvf -path secret/ -kv1 -values
+```
 
 ## License
 
@@ -174,4 +178,13 @@ MIT
 
 ## Changes
 
-- Interactive: pressing Enter now prints only the secret value (JSON), not the path or "path = value".
+- Multi-path support via `-paths` (comma-separated start paths).
+- Robust mount discovery: fallback to `v1/sys/internal/ui/mounts` when `sys/mounts` is forbidden (403), with parsing that merges sectioned responses.
+- KV handling:
+  - Default to KV v2;
+  - `-kv1` to force KV v1;
+  - `-force-kv2` to skip detection and force v2;
+  - Per-mount KV v2 detection when listing across mounts.
+- Removed `-debug-mounts` flag after validating fallback discovery.
+- Docs updated: usage examples for `-paths`, notes about fallback behavior.
+- Interactive: pressing Enter prints only the secret value (JSON), not the path or "path = value".

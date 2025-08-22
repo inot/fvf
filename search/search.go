@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -16,6 +17,81 @@ import (
 type FoundItem struct {
 	Path  string      `json:"path"`
 	Value interface{} `json:"value,omitempty"`
+}
+
+// ListMountsWithFallback attempts to list mounts using the standard API, and if
+// permission is denied (403), it falls back to the internal UI endpoint
+// sys/internal/ui/mounts, which is often permitted to less privileged users.
+func ListMountsWithFallback(ctx context.Context, c *vault.Client) (map[string]*vault.MountOutput, error) {
+	mounts, err := c.Sys().ListMountsWithContext(ctx)
+	if err == nil {
+		return mounts, nil
+	}
+	var respErr *vault.ResponseError
+	if !errors.As(err, &respErr) || respErr.StatusCode != 403 {
+		return nil, err
+	}
+
+	// Fallback: internal UI endpoint
+	sec, ierr := c.Logical().ReadWithContext(ctx, "sys/internal/ui/mounts")
+	if ierr != nil {
+		return nil, err // return original error for context
+	}
+	if sec == nil || sec.Data == nil {
+		return nil, err
+	}
+    // Some Vault versions nest the actual mounts map under the "data" key,
+    // and then again under a "mounts" key. Others group mounts into sections
+    // like "secret" or "system". Merge mounts from all shapes.
+    root := sec.Data
+    if inner, ok := root["data"].(map[string]interface{}); ok {
+        root = inner
+    }
+
+    out := make(map[string]*vault.MountOutput)
+
+    // Helper to merge a mounts-like map into out.
+    mergeMounts := func(m map[string]interface{}) {
+        for k, v := range m {
+            mm, ok := v.(map[string]interface{})
+            if !ok {
+                continue
+            }
+            // Heuristic: treat entries that have either a type or options as mount entries
+            if _, hasType := mm["type"]; !hasType {
+                if _, hasOpts := mm["options"]; !hasOpts {
+                    continue
+                }
+            }
+            mo := &vault.MountOutput{Options: map[string]string{}}
+            if t, ok := mm["type"].(string); ok {
+                mo.Type = t
+            }
+            if opts, ok := mm["options"].(map[string]interface{}); ok {
+                for okk, ov := range opts {
+                    if s, ok := ov.(string); ok {
+                        mo.Options[okk] = s
+                    }
+                }
+            }
+            out[k] = mo
+        }
+    }
+
+    // 1) If there's an explicit mounts map, merge it first
+    if mountsMap, ok := root["mounts"].(map[string]interface{}); ok {
+        mergeMounts(mountsMap)
+    }
+    // 2) If root itself looks like a mounts map, merge it
+    mergeMounts(root)
+    // 3) Some servers structure mounts under section keys (e.g., "secret"). Merge all section maps.
+    for _, v := range root {
+        if section, ok := v.(map[string]interface{}); ok {
+            mergeMounts(section)
+        }
+    }
+
+    return out, nil
 }
 
 // LogicalAPI is the minimal surface used from Vault's logical client.
@@ -232,8 +308,7 @@ func handleLeaf(
 // DetectKV2 tries to determine whether the mount for the start path is KV v2.
 func DetectKV2(ctx context.Context, c *vault.Client, start string) (bool, bool) {
 	mount, _ := SplitMount(start)
-	sys := c.Sys()
-	mounts, err := sys.ListMountsWithContext(ctx)
+	mounts, err := ListMountsWithFallback(ctx, c)
 	if err != nil {
 		return false, false
 	}

@@ -213,11 +213,11 @@ func collectItems(ctx context.Context, client *vault.Client, opts options, match
 }
 
 func collectAcrossAllMounts(ctx context.Context, client *vault.Client, opts options, matcher *regexp.Regexp) ([]search.FoundItem, error) {
-    mounts, err := client.Sys().ListMountsWithContext(ctx)
+    mounts, err := search.ListMountsWithFallback(ctx, client)
     if err != nil {
         var respErr *vault.ResponseError
         if errors.As(err, &respErr) && respErr.StatusCode == 403 {
-            printGreenHint("fvf: permission denied listing mounts (sys/mounts). Use -path to target a known mount. If your mount is KV v1, add -kv1.")
+            printGreenHint("fvf: permission denied listing mounts (sys/mounts). Fallback to sys/internal/ui/mounts also failed. Use -path to target a known mount. If your mount is KV v1, add -kv1.")
             fmt.Fprintln(os.Stderr, "Vault error:", err)
             os.Exit(1)
         }
