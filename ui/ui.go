@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
@@ -22,6 +23,53 @@ func putLine(s tcell.Screen, x, y int, text string) {
     for _, r := range text {
         s.SetContent(cx, y, r, nil, st)
         cx += runewidth.RuneWidth(r)
+    }
+}
+
+// putLineWithHighlights renders text with baseStyle and highlights all case-insensitive
+// occurrences of query using matchStyle. Handles wide runes properly.
+func putLineWithHighlights(s tcell.Screen, x, y int, text, query string, baseStyle, matchStyle tcell.Style) {
+    rs := []rune(text)
+    if query == "" {
+        cx := x
+        for _, r := range rs {
+            s.SetContent(cx, y, r, nil, baseStyle)
+            cx += runewidth.RuneWidth(r)
+        }
+        return
+    }
+    qr := []rune(query)
+    // Lowercase copies for case-insensitive matching
+    lrs := make([]rune, len(rs))
+    for i, r := range rs { lrs[i] = unicode.ToLower(r) }
+    lqr := make([]rune, len(qr))
+    for i, r := range qr { lqr[i] = unicode.ToLower(r) }
+
+    cx := x
+    for i := 0; i < len(rs); {
+        matched := false
+        if i+len(lqr) <= len(lrs) {
+            ok := true
+            for j := 0; j < len(lqr); j++ {
+                if lrs[i+j] != lqr[j] { ok = false; break }
+            }
+            if ok {
+                // draw match
+                for j := 0; j < len(qr); j++ {
+                    r := rs[i+j]
+                    s.SetContent(cx, y, r, nil, matchStyle)
+                    cx += runewidth.RuneWidth(r)
+                }
+                i += len(qr)
+                matched = true
+            }
+        }
+        if !matched {
+            r := rs[i]
+            s.SetContent(cx, y, r, nil, baseStyle)
+            cx += runewidth.RuneWidth(r)
+            i++
+        }
     }
 }
 
@@ -101,10 +149,16 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
             if runewidth.StringWidth(line) > avail {
                 line = runewidth.Truncate(line, avail, "…")
             }
+            // Highlight query matches: base gray, matches white; selected line reversed
+            q := strings.TrimSpace(query)
             if i+offset == cursor {
-                putLineHighlighted(s, 0, contentTop+i, line)
+                base := tcell.StyleDefault.Reverse(true)
+                match := base.Bold(true)
+                putLineWithHighlights(s, 0, contentTop+i, line, q, base, match)
             } else {
-                putLine(s, 0, contentTop+i, line)
+                base := tcell.StyleDefault.Foreground(tcell.ColorDarkGray)
+                match := tcell.StyleDefault.Foreground(tcell.ColorWhite)
+                putLineWithHighlights(s, 0, contentTop+i, line, q, base, match)
             }
         }
 

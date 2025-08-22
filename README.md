@@ -229,3 +229,5 @@ MIT
 - JSON preview mode: when `-json` is used on a TTY, the interactive preview shows pretty-printed JSON; non-interactive `-json` output remains unchanged.
 - Interactive trigger: when stdout is a TTY, passing either `-values` or `-json` will launch the interactive UI with a preview pane.
 - Streaming UI is now the default behavior for interactive mode; the `-stream` flag was removed.
+- Interactive list: highlight matched query substrings in results (white on gray; bold when selected).
+- Tests: added unit tests for UI helpers and value formatting.
