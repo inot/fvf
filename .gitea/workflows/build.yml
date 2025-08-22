@@ -7,9 +7,75 @@ on:
   pull_request:
 
 jobs:
-  echo-build:
+  build-and-package:
     runs-on: golang
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Show build message
+        run: echo "building..."
+
+      - name: Show Go version
+        run: go version
+
+      - name: Ensure zip tool is available
+        shell: bash
         run: |
-          echo "building..."
+          if ! command -v zip >/dev/null 2>&1; then
+            echo "zip not found, attempting to install..."
+            (apt-get update && apt-get install -y zip) || (apk add --no-cache zip) || true
+          fi
+          command -v zip || { echo "zip still unavailable; packaging may fail"; exit 1; }
+
+      - name: Build all platforms
+        run: make build-all
+
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=""
+          if [ -f version ] && [ -s version ]; then
+            VERSION=$(sed -e 's/[[:space:]]//g' -e 's/[.]*$//' version)
+          else
+            VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo 0.1.0)
+          fi
+          echo "version=${VERSION}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          APP=fvf
+          DIST=dist
+          mkdir -p "$DIST"
+
+          # Map binary names to platform tags for archive names
+          package() {
+            bin_path="$1"; plat_tag="$2"; rename_to="$3"
+            tmpdir=$(mktemp -d)
+            cp README.md "$tmpdir/README.md" 2>/dev/null || true
+            cp "$bin_path" "$tmpdir/$rename_to"
+            chmod +x "$tmpdir/$rename_to" || true
+            (cd "$tmpdir" && zip -9 -r "../${APP}-v${VERSION}-${plat_tag}.zip" .)
+            mv "${tmpdir}/../${APP}-v${VERSION}-${plat_tag}.zip" "$DIST/"
+            rm -rf "$tmpdir"
+          }
+
+          # Expect binaries as produced by Makefile
+          [ -f "$DIST/${APP}-linux-amd64" ] && package "$DIST/${APP}-linux-amd64" linux-amd64 "$APP"
+          [ -f "$DIST/${APP}-linux-arm64" ] && package "$DIST/${APP}-linux-arm64" linux-arm64 "$APP"
+          [ -f "$DIST/${APP}-darwin-arm64" ] && package "$DIST/${APP}-darwin-arm64" macos-arm64 "$APP"
+          [ -f "$DIST/${APP}-windows-amd64.exe" ] && package "$DIST/${APP}-windows-amd64.exe" win64 "${APP}.exe"
+
+          echo "Built archives:"
+          ls -l "$DIST"/*.zip || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fvf-zips
+          path: dist/*.zip
