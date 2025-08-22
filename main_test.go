@@ -23,6 +23,40 @@ type fakeLogical struct {
 	read map[string]*vault.Secret
 }
 
+func TestParseFlagsWithArgs_DefaultInteractive(t *testing.T) {
+    // No args -> interactive by default
+    got := parseFlagsWithArgs([]string{})
+    if !got.interactive {
+        t.Fatal("expected interactive=true when no args")
+    }
+}
+
+func TestParseFlagsWithArgs_PathsParsing(t *testing.T) {
+    args := []string{"-paths", "kv/app1/,kv/app2/", "-json"}
+    got := parseFlagsWithArgs(args)
+    if len(got.paths) != 2 || got.paths[0] != "kv/app1/" || got.paths[1] != "kv/app2/" {
+        t.Fatalf("unexpected paths parsed: %#v", got.paths)
+    }
+    if !got.jsonOut {
+        t.Fatal("expected jsonOut=true")
+    }
+}
+
+func TestDetermineInteractive(t *testing.T) {
+    // values + tty -> interactive
+    if !determineInteractive(options{printValues: true}, 2, true) {
+        t.Fatal("expected interactive when -values and tty")
+    }
+    // values + non-tty -> not forced
+    if determineInteractive(options{printValues: true}, 2, false) {
+        t.Fatal("did not expect interactive when -values and non-tty by default")
+    }
+    // explicit interactive flag respected
+    if !determineInteractive(options{interactive: true}, 2, false) {
+        t.Fatal("expected interactive when flag explicitly set")
+    }
+}
+
 func TestWalk_MaxDepth(t *testing.T) {
 	f := &fakeLogical{
 		list: map[string]*vault.Secret{

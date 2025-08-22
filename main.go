@@ -80,40 +80,43 @@ func main() {
 }
 
 func parseFlags() options {
+    // Delegate to the args-based parser for testability
+    return parseFlagsWithArgs(os.Args[1:])
+}
+
+// parseFlagsWithArgs builds a local FlagSet to allow deterministic tests.
+func parseFlagsWithArgs(args []string) options {
     var opts options
+    fs := flag.NewFlagSet("fvf", flag.ContinueOnError)
+    fs.SetOutput(os.Stderr)
+
     // multi-paths as a simple comma-separated string flag
-    pathsRaw := flag.String("paths", "", "Comma-separated list of start paths, e.g. kv/app1/,kv/app2/")
-    // Custom usage to include version header
-    flag.Usage = func() {
+    pathsRaw := fs.String("paths", "", "Comma-separated list of start paths, e.g. kv/app1/,kv/app2/")
+
+    fs.Usage = func() {
         fmt.Fprintf(os.Stderr, "fvf %s (commit %s, built %s)\n\n", version, commit, date)
         fmt.Fprintf(os.Stderr, "Usage: fvf [-path <mount/inner/>] [flags]\n\n")
         fmt.Fprintf(os.Stderr, "Note: Running with no flags starts Interactive mode by default.\n\n")
-        flag.PrintDefaults()
-    }
-    flag.StringVar(&opts.startPath, "path", "", "Start path to recurse, e.g. secret/ or secret/app/ (default: all KV mounts)")
-    flag.BoolVar(&opts.kv2, "kv2", true, "Assume KV v2 (default). If unsure, leave as-is.")
-    flag.BoolVar(&opts.kv1, "kv1", false, "Assume KV v1 (overrides -kv2 and skips detection)")
-    flag.BoolVar(&opts.forceKV2, "force-kv2", false, "Force KV v2 and skip auto-detection")
-    flag.StringVar(&opts.match, "match", "", "Optional regex to match full logical path")
-    flag.StringVar(&opts.namePart, "name", "", "Case-insensitive substring to match secret name (last segment)")
-    flag.BoolVar(&opts.printValues, "values", false, "Also read and print values as JSON")
-    flag.IntVar(&opts.maxDepth, "max-depth", 0, "Maximum recursion depth (0 = unlimited)")
-    flag.BoolVar(&opts.jsonOut, "json", false, "Output JSON array instead of lines")
-    flag.DurationVar(&opts.timeout, "timeout", 30*time.Second, "Total timeout for the operation")
-    flag.BoolVar(&opts.interactive, "interactive", false, "Interactive TUI filter (like fzf): type to filter, Enter prints secret value")
-    flag.BoolVar(&opts.showVersion, "version", false, "Print version information and exit")
-    flag.Parse()
-
-    // Default: if no flags provided, start in interactive mode
-    if len(os.Args) == 1 {
-        opts.interactive = true
+        fs.PrintDefaults()
     }
 
-    // If values are requested and stdout is a terminal, prefer interactive TUI
-    // (so `fvf -values` launches TUI with lazy preview instead of dumping everything)
-    if opts.printValues && term.IsTerminal(int(os.Stdout.Fd())) && !opts.jsonOut {
-        opts.interactive = true
-    }
+    fs.StringVar(&opts.startPath, "path", "", "Start path to recurse, e.g. secret/ or secret/app/ (default: all KV mounts)")
+    fs.BoolVar(&opts.kv2, "kv2", true, "Assume KV v2 (default). If unsure, leave as-is.")
+    fs.BoolVar(&opts.kv1, "kv1", false, "Assume KV v1 (overrides -kv2 and skips detection)")
+    fs.BoolVar(&opts.forceKV2, "force-kv2", false, "Force KV v2 and skip auto-detection")
+    fs.StringVar(&opts.match, "match", "", "Optional regex to match full logical path")
+    fs.StringVar(&opts.namePart, "name", "", "Case-insensitive substring to match secret name (last segment)")
+    fs.BoolVar(&opts.printValues, "values", false, "Also read and print values as JSON")
+    fs.IntVar(&opts.maxDepth, "max-depth", 0, "Maximum recursion depth (0 = unlimited)")
+    fs.BoolVar(&opts.jsonOut, "json", false, "Output JSON array instead of lines")
+    fs.DurationVar(&opts.timeout, "timeout", 30*time.Second, "Total timeout for the operation")
+    fs.BoolVar(&opts.interactive, "interactive", false, "Interactive TUI filter (like fzf): type to filter, Enter prints secret value")
+    fs.BoolVar(&opts.showVersion, "version", false, "Print version information and exit")
+
+    _ = fs.Parse(args)
+
+    // Default/interactive determination is factored for testing
+    opts.interactive = determineInteractive(opts, len(args), term.IsTerminal(int(os.Stdout.Fd())))
 
     if opts.showVersion {
         fmt.Printf("fvf %s (commit %s, built %s)\n", version, commit, date)
@@ -137,6 +140,19 @@ func parseFlags() options {
         usageAndExit("-path is required")
     }
     return opts
+}
+
+// determineInteractive computes whether to run in interactive mode given inputs.
+func determineInteractive(opts options, argsLen int, stdoutIsTTY bool) bool {
+    // No flags -> interactive by default
+    if argsLen == 0 {
+        return true
+    }
+    // If values are requested and stdout is a terminal, prefer interactive TUI
+    if opts.printValues && stdoutIsTTY && !opts.jsonOut {
+        return true
+    }
+    return opts.interactive
 }
 
 func usageAndExit(msg string) {
