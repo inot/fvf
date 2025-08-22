@@ -63,16 +63,16 @@ func main() {
 		fatal(err)
 	}
 
-	items, err := collectItems(ctx, client, opts, matcher)
-	if err != nil {
-		fatal(err)
-	}
-
 	if opts.interactive {
-		if err := runInteractive(items, opts, client); err != nil {
+		if err := runInteractiveStream(opts, client, matcher); err != nil {
 			fatal(err)
 		}
 		return
+	}
+
+	items, err := collectItems(ctx, client, opts, matcher)
+	if err != nil {
+		fatal(err)
 	}
 
 	if err := printItems(items, opts); err != nil {
@@ -111,7 +111,7 @@ func parseFlagsWithArgs(args []string) options {
 	fs.IntVar(&opts.maxDepth, "max-depth", 0, "Maximum recursion depth (0 = unlimited)")
 	fs.BoolVar(&opts.jsonOut, "json", false, "Output JSON array instead of lines")
 	fs.DurationVar(&opts.timeout, "timeout", 30*time.Second, "Total timeout for the operation")
-	fs.BoolVar(&opts.interactive, "interactive", false, "Interactive TUI filter (like fzf): type to filter, Enter prints secret value")
+	fs.BoolVar(&opts.interactive, "interactive", false, "Interactive TUI filter (like fzf): type to filter, Enter prints secret value (interactive uses streaming by default)")
 	fs.BoolVar(&opts.showVersion, "version", false, "Print version information and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -283,7 +283,10 @@ func collectForSinglePath(ctx context.Context, client *vault.Client, opts option
 	return search.WalkVault(ctx, client.Logical(), opts.startPath, kv2, opts.maxDepth, matcher, valuesDuringWalk(opts))
 }
 
-func runInteractive(items []search.FoundItem, opts options, client *vault.Client) error {
+// (legacy non-stream interactive runner removed; interactive now streams by default)
+
+func runInteractiveStream(opts options, client *vault.Client, matcher *regexp.Regexp) error {
+	// Build the same lazy fetcher used by non-streaming interactive mode
 	fetcher := func(p string) (string, error) {
 		perReqTimeout := 15 * time.Second
 		attempt := func() (interface{}, error) {
@@ -311,8 +314,72 @@ func runInteractive(items []search.FoundItem, opts options, client *vault.Client
 		// Otherwise return a human-friendly raw representation where strings are unquoted.
 		return formatValueRaw(val, true), nil
 	}
-	// Show preview if either -values or -json is set.
-	return ui.Run(items, opts.printValues || opts.jsonOut, fetcher)
+
+
+	// Stream items into the UI
+	itemsCh := make(chan search.FoundItem, 256)
+	errCh := make(chan error, 1)
+
+	// Context to allow cancellation when UI exits
+	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+	go func() {
+		defer close(itemsCh)
+		defer close(errCh)
+		defer cancel()
+
+		// Helper to walk a single start path
+		walkOne := func(start string) error {
+			kv2 := decideKV2ForPath(ctx, client, start, opts)
+			return search.WalkVaultStream(ctx, client.Logical(), start, kv2, opts.maxDepth, matcher, false /*withValues*/, itemsCh)
+		}
+
+		// Route by input, mirroring collectItems()
+		var err error
+		if strings.TrimSpace(opts.startPath) == "" && len(opts.paths) == 0 {
+			var mounts map[string]*vault.MountOutput
+			mounts, err = search.ListMountsWithFallback(ctx, client)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			for mntPath, m := range mounts {
+				if m.Type != "kv" {
+					continue
+				}
+				mnt := strings.TrimSuffix(mntPath, "/")
+				kv2 := decideKV2ForMountMeta(opts, m.Options)
+				if e := search.WalkVaultStream(ctx, client.Logical(), mnt, kv2, opts.maxDepth, matcher, false, itemsCh); e != nil {
+					err = e
+					break
+				}
+			}
+		} else if len(opts.paths) > 0 {
+			for _, p := range opts.paths {
+				if e := walkOne(p); e != nil {
+					err = e
+					break
+				}
+			}
+		} else {
+			err = walkOne(opts.startPath)
+		}
+		errCh <- err
+	}()
+
+	// Start UI; preview enabled if -values or -json
+	uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, fetcher)
+	// Ensure we stop walking
+	cancel()
+	// Prefer UI error if any, else walker error (non-blocking read if goroutine still running)
+	if uiErr != nil {
+		return uiErr
+	}
+	select {
+	case e := <-errCh:
+		return e
+	default:
+		return nil
+	}
 }
 
 func printItems(items []search.FoundItem, opts options) error {

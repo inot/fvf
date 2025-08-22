@@ -19,6 +19,108 @@ type FoundItem struct {
 	Value interface{} `json:"value,omitempty"`
 }
 
+// WalkVaultStream recursively walks the given start path and sends matching items to outCh as they are found.
+// It respects context cancellation. When finished (or on error), it closes doneCh by sending the first error (nil on success)
+// via errCh if provided.
+func WalkVaultStream(
+    ctx context.Context,
+    logical LogicalAPI,
+    start string,
+    kv2 bool,
+    maxDepth int,
+    matcher *regexp.Regexp,
+    withValues bool,
+    outCh chan<- FoundItem,
+) error {
+    mount, inner := SplitMount(start)
+    return recurseStream(ctx, logical, mount, inner, kv2, 0, maxDepth, matcher, withValues, outCh)
+}
+
+func recurseStream(
+    ctx context.Context,
+    logical LogicalAPI,
+    mount, inner string,
+    kv2 bool,
+    depth, maxDepth int,
+    matcher *regexp.Regexp,
+    withValues bool,
+    outCh chan<- FoundItem,
+) error {
+    if maxDepth > 0 && depth > maxDepth {
+        return nil
+    }
+
+    listPath := ListAPIPath(mount, inner, kv2)
+    sec, err := logical.ListWithContext(ctx, listPath)
+    if err != nil {
+        return err
+    }
+    if sec == nil || sec.Data == nil {
+        return handleLeafStream(ctx, logical, mount, inner, kv2, matcher, withValues, outCh)
+    }
+
+    rawKeys, ok := sec.Data["keys"].([]interface{})
+    if !ok {
+        return fmt.Errorf("unexpected list response at %s", listPath)
+    }
+    for _, k := range rawKeys {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        default:
+        }
+        key, _ := k.(string)
+        if strings.HasSuffix(key, "/") {
+            nextDepth := depth + 1
+            if maxDepth > 0 && nextDepth >= maxDepth {
+                continue
+            }
+            nextInner := joinNonEmpty(strings.TrimSuffix(inner, "/"), strings.TrimSuffix(key, "/"))
+            if err := recurseStream(ctx, logical, mount, nextInner, kv2, nextDepth, maxDepth, matcher, withValues, outCh); err != nil {
+                return err
+            }
+        } else {
+            if maxDepth > 0 && (depth+1) > maxDepth {
+                continue
+            }
+            leafInner := joinNonEmpty(inner, key)
+            if err := handleLeafStream(ctx, logical, mount, leafInner, kv2, matcher, withValues, outCh); err != nil {
+                return err
+            }
+        }
+    }
+    return nil
+}
+
+func handleLeafStream(
+    ctx context.Context,
+    logical LogicalAPI,
+    mount, inner string,
+    kv2 bool,
+    matcher *regexp.Regexp,
+    withValues bool,
+    outCh chan<- FoundItem,
+) error {
+    logicalPath := path.Clean(joinNonEmpty(mount, inner))
+    base := path.Base(logicalPath)
+    matches := NameOrRegexMatch(base, logicalPath, matcher)
+
+    if withValues {
+        val, err := ReadSecret(ctx, logical, mount, inner, kv2)
+        if err != nil {
+            return err
+        }
+        if matches {
+            outCh <- FoundItem{Path: logicalPath, Value: val}
+        }
+        return nil
+    }
+
+    if matches {
+        outCh <- FoundItem{Path: logicalPath}
+    }
+    return nil
+}
 // ListMountsWithFallback attempts to list mounts using the standard API, and if
 // permission is denied (403), it falls back to the internal UI endpoint
 // sys/internal/ui/mounts, which is often permitted to less privileged users.

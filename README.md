@@ -10,14 +10,33 @@ A fast interactive finder for HashiCorp Vault KV secrets. Think “fzf for Vault
 
 ## Requirements
 
-- Go 1.20+ (module currently targets Go 1.24)
 - HashiCorp Vault access
 - Environment:
   - VAULT_ADDR (e.g., <https://vault.example.com:8200>)
-  -
   - VAULT_TOKEN (or export a token from your auth flow)
 
-## Install / Build
+## Usage
+
+### Basic usage
+
+Set Vault environment and run fvf:
+
+```sh
+export VAULT_ADDR="https://vault.example.com:8200"
+export VAULT_TOKEN="...your token..."
+
+# Start interactive TUI (default)
+./fvf
+
+# Force interactive TUI (streaming by default)
+./fvf -interactive
+```
+
+## Requirements for Build
+
+- Go 1.20+ (module currently targets Go 1.24)
+
+## Build
 
 - Host build:
 
@@ -62,6 +81,17 @@ Check version:
 
   - Type to filter; Up/Down to navigate; Enter prints secret value.
   - Right pane shows value preview (when available).
+
+- Interactive streaming (default in interactive mode; progressive results, faster startup):
+
+  ```sh
+  # Interactive is default with no flags
+  ./fvf
+  # Or explicitly force interactive
+  ./fvf -interactive
+  # Can be combined with -values or -json for preview mode
+  ./fvf -interactive -values
+  ```
 
 - Interactive with values:
 
@@ -139,7 +169,7 @@ Check version:
 - -max-depth int        Max recursion depth (0 = unlimited)
 - -json                 Output JSON array (TTY: opens interactive with JSON preview)
 - -timeout duration     Total timeout (default 30s)
-- -interactive          Force interactive TUI
+- -interactive          Force interactive TUI (interactive streams results by default)
 - -version             Print version and exit
 
 ## Makefile targets
@@ -198,3 +228,4 @@ MIT
 - Interactive preview: added a separator under the selected path and render values as a two-column Key/Value table when possible for improved readability.
 - JSON preview mode: when `-json` is used on a TTY, the interactive preview shows pretty-printed JSON; non-interactive `-json` output remains unchanged.
 - Interactive trigger: when stdout is a TTY, passing either `-values` or `-json` will launch the interactive UI with a preview pane.
+- Streaming UI is now the default behavior for interactive mode; the `-stream` flag was removed.

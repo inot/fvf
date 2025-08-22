@@ -55,7 +55,7 @@ jobs:
         run: go test ./...
 
       - name: Run coverage
-        run: go test ./... -coverprofile cover.out.tmp && cat cover.out.tmp | grep -v "ui.go" > cover.out && go tool cover -func cover.out | fgrep total | awk '{print $3}'
+        run: go test ./... -coverprofile cover.out && go tool cover -func cover.out | fgrep total | awk '{print $3}'
 
       - name: Build all platforms
         run: make build-all
