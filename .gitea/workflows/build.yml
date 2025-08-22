@@ -22,11 +22,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Unpack source
-        run: |
-          tar -xzf /tmp/src.tgz -C .
-          rm -f /tmp/src.tgz
-
       - name: Show Go version
         run: go version
 
