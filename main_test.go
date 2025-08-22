@@ -56,9 +56,12 @@ func TestReadSecret_ErrorShapes(t *testing.T) {
 		},
 	}
 	// kv2 wrong shape
-	_, err := search.ReadSecret(context.Background(), f, "kv", "bad", true)
-	if err == nil {
-		t.Fatal("expected error for unexpected v2 data shape")
+	val, err := search.ReadSecret(context.Background(), f, "kv", "bad", true)
+	if err != nil {
+		t.Fatalf("did not expect error for tolerant v2 shape handling, got: %v", err)
+	}
+	if m, ok := val.(map[string]interface{}); !ok || len(m) != 0 {
+		t.Fatalf("expected empty map for unexpected shape, got %#v", val)
 	}
 	// nil secret
 	_, err = search.ReadSecret(context.Background(), f, "kv", "missing", true)

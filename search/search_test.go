@@ -59,9 +59,12 @@ func TestReadSecret_ErrorShapes_pkg(t *testing.T) {
 			"kv/data/bad": {Data: map[string]interface{}{"oops": 1}},
 		},
 	}
-	_, err := ReadSecret(context.Background(), f, "kv", "bad", true)
-	if err == nil {
-		t.Fatal("expected error for unexpected v2 data shape")
+	val, err := ReadSecret(context.Background(), f, "kv", "bad", true)
+	if err != nil {
+		t.Fatalf("did not expect error for tolerant v2 shape handling, got: %v", err)
+	}
+	if m, ok := val.(map[string]interface{}); !ok || len(m) != 0 {
+		t.Fatalf("expected empty map for unexpected shape, got %#v", val)
 	}
 	_, err = ReadSecret(context.Background(), f, "kv", "missing", true)
 	if err == nil {

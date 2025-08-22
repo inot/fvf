@@ -50,6 +50,9 @@ jobs:
 
       - name: Show Go version
         run: go version
+        
+      - name: Run tests
+        run: go test ./...
 
       - name: Build all platforms
         run: make build-all
