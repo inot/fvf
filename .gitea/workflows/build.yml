@@ -1,5 +1,4 @@
 name: CI - Echo Build Message
-# TODO: Create image before main job and use this image for main job
 on:
   push:
     branches:
