@@ -85,8 +85,8 @@ jobs:
         with:
           server_url: ${{ secrets.GITEASERVERURL }}
           token: ${{ secrets.GITEATOKEN }}
-          tag_name: v${{ needs.build-and-package.outputs.version }}
-          name: "fvf v${{ needs.build-and-package.outputs.version }}"
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: "fvf v${{ steps.ver.outputs.version }}"
           body: |
             Automated release from CI
           files: |
