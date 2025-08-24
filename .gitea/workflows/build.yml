@@ -3,8 +3,8 @@ on:
   push:
     branches:
       - '**'
-    # paths:
-    #   - '**.go'
+    paths:
+      - '**.go'
   pull_request:
 
 jobs:
@@ -46,7 +46,7 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Package artifacts
-        # if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -euo pipefail
@@ -71,14 +71,8 @@ jobs:
           [ -f "$DIST/${APP}-darwin-arm64" ] && package "$DIST/${APP}-darwin-arm64" macos-arm64 "$APP"
           [ -f "$DIST/${APP}-windows-amd64.exe" ] && package "$DIST/${APP}-windows-amd64.exe" win64 "${APP}.exe"
 
-      # - name: Upload build artifacts
-      #   # if: github.ref == 'refs/heads/main'
-      #   uses: actions/upload-artifact@v3
-      #   with:
-      #     name: fvf-zips
-      #     path: dist/*.zip
       - name: Create Gitea Release and upload assets
-        # if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main'
         uses: https://gitea.com/actions/gitea-release-action@v1
         env:
           NODE_OPTIONS: '--experimental-fetch'
@@ -91,30 +85,3 @@ jobs:
             Automated release from CI
           files: |
             dist/*.zip
-
-  # release:
-  #   runs-on: ubuntu-latest
-  #   needs: build-and-package
-  #   if: github.ref == 'refs/heads/main'
-  #   container:
-  #     image: node:16-bullseye
-  #   steps:
-  #     - name: Download build artifacts
-  #       uses: actions/download-artifact@v3
-  #       with:
-  #         name: fvf-zips
-  #         path: dist
-
-  #     - name: Create Gitea Release and upload assets
-  #       uses: https://gitea.com/actions/gitea-release-action@v1
-  #       env:
-  #         NODE_OPTIONS: '--experimental-fetch'
-  #       with:
-  #         server_url: ${{ secrets.GITEASERVERURL }}
-  #         token: ${{ secrets.GITEATOKEN }}
-  #         tag_name: v${{ needs.build-and-package.outputs.version }}
-  #         name: "fvf v${{ needs.build-and-package.outputs.version }}"
-  #         body: |
-  #           Automated release from CI
-  #         files: |
-  #           dist/*.zip
