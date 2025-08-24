@@ -231,3 +231,8 @@ MIT
 - Streaming UI is now the default behavior for interactive mode; the `-stream` flag was removed.
 - Interactive list: highlight matched query substrings in results (white on gray; bold when selected).
 - Tests: added unit tests for UI helpers and value formatting.
+
+## TODO
+
+- If there are no env variables set shows the error message.
+- 
