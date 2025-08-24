@@ -235,4 +235,4 @@ MIT
 ## TODO
 
 - If there are no env variables set shows the error message.
-- 
+- Status bar with version, token lifetime and server 
