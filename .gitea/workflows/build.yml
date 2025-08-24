@@ -71,12 +71,12 @@ jobs:
           [ -f "$DIST/${APP}-darwin-arm64" ] && package "$DIST/${APP}-darwin-arm64" macos-arm64 "$APP"
           [ -f "$DIST/${APP}-windows-amd64.exe" ] && package "$DIST/${APP}-windows-amd64.exe" win64 "${APP}.exe"
 
-      - name: Upload build artifacts
-        # if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v3
-        with:
-          name: fvf-zips
-          path: dist/*.zip
+      # - name: Upload build artifacts
+      #   # if: github.ref == 'refs/heads/main'
+      #   uses: actions/upload-artifact@v3
+      #   with:
+      #     name: fvf-zips
+      #     path: dist/*.zip
       - name: Create Gitea Release and upload assets
         # if: github.ref == 'refs/heads/main'
         uses: https://gitea.com/actions/gitea-release-action@v1
