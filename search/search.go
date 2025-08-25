@@ -480,6 +480,10 @@ func NewVaultClient() (*vault.Client, error) {
             return nil, fmt.Errorf("token from %s is not valid for VAULT_ADDR %s: %w", tokenSource, addr, err)
         }
     }
+    // If no token was found at all, fail fast with a friendly error.
+    if tokenSource == "" {
+        return nil, fmt.Errorf("no Vault token found. Please export VAULT_TOKEN or create ~/.vault-token")
+    }
     return c, nil
 }
 
