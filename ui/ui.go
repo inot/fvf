@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 	"sync/atomic"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
@@ -329,6 +330,23 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
 	applyFilter()
 	redraw()
 
+	// Periodic status bar refresh without user input
+	// Post an interrupt every 10s to trigger redraw and statusProvider updates
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			if shouldQuit.Load() {
+				return
+			}
+			<-ticker.C
+			if shouldQuit.Load() {
+				return
+			}
+			s.PostEvent(tcell.NewEventInterrupt(nil))
+		}
+	}()
+
 	for {
 		ev := s.PollEvent()
 		switch ev := ev.(type) {
@@ -427,17 +445,8 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
 	}
 }
 
-func putLineHighlighted(s tcell.Screen, x, y int, text string) {
-    st := tcell.StyleDefault.Reverse(true)
-    cx := x
-    for _, r := range text {
-        s.SetContent(cx, y, r, nil, st)
-        cx += runewidth.RuneWidth(r)
-    }
-}
-
 func makeSeparator(w int) string {
-	return strings.Repeat("-", w)
+    return strings.Repeat("-", w)
 }
 
 func isLikelyJSON(s string) bool {
