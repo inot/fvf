@@ -614,7 +614,6 @@ func runInteractiveStream(opts options, client *vault.Client, matcher *regexp.Re
 						default:
 						}
 						close(quitCh)
-						signaled = true
 						return
 					}
 				}

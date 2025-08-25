@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
 	"sync/atomic"
 	"time"
+	"unicode"
+
+	"fvf/search"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
-	"fvf/search"
 )
 
 // ValueFetcher returns a string to display for the value of a given path.
@@ -67,7 +68,6 @@ func drawStatusBar(s tcell.Screen, x, y, w int, status StatusProvider) {
 			avail = 0
 		}
 		middle = runewidth.Truncate(middle, avail, "…")
-		mw = runewidth.StringWidth(middle)
 	}
 
 	// Ensure left does not overlap middle
@@ -77,7 +77,6 @@ func drawStatusBar(s tcell.Screen, x, y, w int, status StatusProvider) {
 			avail = 0
 		}
 		left = runewidth.Truncate(left, avail, "…")
-		lw = runewidth.StringWidth(left)
 	}
 
 	// Clear line with style
@@ -446,7 +445,7 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
 }
 
 func makeSeparator(w int) string {
-    return strings.Repeat("-", w)
+	return strings.Repeat("-", w)
 }
 
 func isLikelyJSON(s string) bool {
@@ -472,26 +471,30 @@ func toKVFromMap(m map[string]interface{}) map[string]string {
 }
 
 func renderKVTable(kv map[string]string, w int) []string {
-    // Stable lexical order of keys for deterministic table view
-    keys := make([]string, 0, len(kv))
-    for k := range kv { keys = append(keys, k) }
-    sort.Strings(keys)
+	// Stable lexical order of keys for deterministic table view
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 
-    maxK := 0
-    for _, k := range keys {
-        if len(k) > maxK { maxK = len(k) }
-    }
+	maxK := 0
+	for _, k := range keys {
+		if len(k) > maxK {
+			maxK = len(k)
+		}
+	}
 
-    lines := make([]string, 0, len(keys))
-    for _, k := range keys {
-        v := kv[k]
-        line := fmt.Sprintf("%-*s: %s", maxK, k, v)
-        if runewidth.StringWidth(line) > w {
-            line = runewidth.Truncate(line, w, "…")
-        }
-        lines = append(lines, line)
-    }
-    return lines
+	lines := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := kv[k]
+		line := fmt.Sprintf("%-*s: %s", maxK, k, v)
+		if runewidth.StringWidth(line) > w {
+			line = runewidth.Truncate(line, w, "…")
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, fetched string) {
@@ -510,32 +513,22 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 		if fetched != "" {
 			if isLikelyJSON(fetched) {
 				// Show JSON as-is when in JSON mode
-				for _, ln := range strings.Split(fetched, "\n") {
-					lines = append(lines, ln)
-				}
+				lines = append(lines, strings.Split(fetched, "\n")...)
 			} else {
 				// Try to render a key/value table from fetched lines like "k: v"
 				kv := toKVFromLines(fetched)
 				if len(kv) > 0 {
-					for _, ln := range renderKVTable(kv, w) {
-						lines = append(lines, ln)
-					}
+					lines = append(lines, renderKVTable(kv, w)...)
 				} else {
-					for _, ln := range strings.Split(fetched, "\n") {
-						lines = append(lines, ln)
-					}
+					lines = append(lines, strings.Split(fetched, "\n")...)
 				}
 			}
 		} else if it.Value != nil {
 			if m, ok := it.Value.(map[string]interface{}); ok {
 				kv := toKVFromMap(m)
-				for _, ln := range renderKVTable(kv, w) {
-					lines = append(lines, ln)
-				}
+				lines = append(lines, renderKVTable(kv, w)...)
 			} else if b, err := json.MarshalIndent(it.Value, "", "  "); err == nil {
-				for _, ln := range strings.Split(string(b), "\n") {
-					lines = append(lines, ln)
-				}
+				lines = append(lines, strings.Split(string(b), "\n")...)
 			}
 		} else {
 			lines = append(lines, "")
