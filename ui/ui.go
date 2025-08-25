@@ -17,6 +17,10 @@ import (
 // When not available or on error, it can return a message string and/or error.
 type ValueFetcher func(path string) (string, error)
 
+// StatusProvider supplies left, middle, right strings for the bottom status bar.
+// Example: left = token lifetime, middle = server, right = version
+type StatusProvider func() (left string, middle string, right string)
+
 func putLine(s tcell.Screen, x, y int, text string) {
     st := tcell.StyleDefault
     cx := x
@@ -25,6 +29,73 @@ func putLine(s tcell.Screen, x, y int, text string) {
         cx += runewidth.RuneWidth(r)
     }
 }
+// drawStatusBar renders a status bar on a single line with left, middle, and right aligned segments.
+func drawStatusBar(s tcell.Screen, x, y, w int, status StatusProvider) {
+    if w <= 0 || status == nil {
+        return
+    }
+    left, middle, right := status()
+
+    st := tcell.StyleDefault.Reverse(true)
+
+    // calculate widths
+    lw := runewidth.StringWidth(left)
+    mw := runewidth.StringWidth(middle)
+    rw := runewidth.StringWidth(right)
+
+    // Right-aligned start pos
+    rStart := w - rw
+    if rStart < 0 {
+        right = runewidth.Truncate(right, w, "…")
+        rw = runewidth.StringWidth(right)
+        rStart = w - rw
+    }
+
+    // Center middle
+    mStart := (w - mw) / 2
+    if mStart < 0 { mStart = 0 }
+
+    // Ensure middle does not overlap right
+    if mStart+mw > rStart {
+        avail := rStart - mStart - 1
+        if avail < 0 { avail = 0 }
+        middle = runewidth.Truncate(middle, avail, "…")
+        mw = runewidth.StringWidth(middle)
+    }
+
+    // Ensure left does not overlap middle
+    if lw > mStart-1 {
+        avail := mStart - 1
+        if avail < 0 { avail = 0 }
+        left = runewidth.Truncate(left, avail, "…")
+        lw = runewidth.StringWidth(left)
+    }
+
+    // Clear line with style
+    for cx := 0; cx < w; cx++ {
+        s.SetContent(x+cx, y, ' ', nil, st)
+    }
+
+    // Draw left
+    cx := x
+    for _, r := range left {
+        s.SetContent(cx, y, r, nil, st)
+        cx += runewidth.RuneWidth(r)
+    }
+    // Draw middle
+    cx = x + mStart
+    for _, r := range middle {
+        s.SetContent(cx, y, r, nil, st)
+        cx += runewidth.RuneWidth(r)
+    }
+    // Draw right
+    cx = x + rStart
+    for _, r := range right {
+        s.SetContent(cx, y, r, nil, st)
+        cx += runewidth.RuneWidth(r)
+    }
+}
+
 
 // putLineWithHighlights renders text with baseStyle and highlights all case-insensitive
 // occurrences of query using matchStyle. Handles wide runes properly.
@@ -75,7 +146,7 @@ func putLineWithHighlights(s tcell.Screen, x, y int, text, query string, baseSty
 
 // RunStream launches the interactive TUI and progressively receives items from a channel.
 // It mirrors the old Run() behavior, including lazy preview fetching when printValues is true.
-func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueFetcher) error {
+func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueFetcher, status StatusProvider) error {
     s, err := tcell.NewScreen()
     if err != nil {
         return err
@@ -105,11 +176,12 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
         prompt := "> " + query
         putLine(s, 0, 0, prompt)
 
-        status := fmt.Sprintf("%d/%d  (Up/Down to move, Enter to select, Esc to quit)", len(filtered), len(items))
-        putLine(s, 0, 1, status)
+        help := fmt.Sprintf("%d/%d  (Up/Down to move, Enter to select, Esc to quit)", len(filtered), len(items))
+        putLine(s, 0, 1, help)
 
         contentTop := 2
-        maxRows := h - contentTop
+        // Reserve 1 line for status bar at the bottom
+        maxRows := h - contentTop - 1
         if maxRows < 1 {
             s.Show()
             return
@@ -127,7 +199,7 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
         }
         rightX := leftW
 
-        if rightX < w {
+        if rightX < w && maxRows > 0 {
             for y := 0; y < h; y++ {
                 s.SetContent(rightX, y, '│', nil, tcell.StyleDefault)
             }
@@ -182,6 +254,9 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
             }
             drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, filtered, cursor, printValues, val)
         }
+
+        // Draw bottom status bar
+        drawStatusBar(s, 0, h-1, w, status)
 
         s.Show()
     }

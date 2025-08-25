@@ -1,6 +1,6 @@
 # fvf
 
-A fast interactive finder for HashiCorp Vault KV secrets. Think “fzf for Vault”.
+A fast interactive finder for HashiCorp Vault KV secrets. Think “fzf for Vault”. 100% Vibecodding.
 
 - Interactive TUI to filter secrets across KV v1/v2.
 - Lazy value preview in the right pane.
@@ -231,7 +231,6 @@ MIT
 - Streaming UI is now the default behavior for interactive mode; the `-stream` flag was removed.
 - Interactive list: highlight matched query substrings in results (white on gray; bold when selected).
 - Tests: added unit tests for UI helpers and value formatting.
-
-## TODO
-
-- Status bar with version, token lifetime and server
+- Status bar: added bottom bar with left/middle/right segments — token TTL (left), Vault server (middle), app version (right).
+- TTL formatting: humanized long durations (years/months/weeks/days/hours/minutes/seconds) with up to 3 components (e.g., `31d 23h 36m`).
+- TTL refresh: cached with periodic refresh (~10s) to avoid excessive API calls.
