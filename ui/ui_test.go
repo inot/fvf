@@ -3,6 +3,7 @@ package ui
 import (
 	"testing"
 	"github.com/mattn/go-runewidth"
+	"strings"
 )
 
 func TestToKVFromLines(t *testing.T) {
@@ -40,6 +41,29 @@ func TestRenderKVTableWidthTruncation(t *testing.T) {
 	// Ensure displayed width does not exceed 10 columns
 	if runewidth.StringWidth(lines[0]) > 10 {
 		t.Fatalf("line not truncated to width, got %q (w=%d)", lines[0], runewidth.StringWidth(lines[0]))
+	}
+}
+
+func TestRenderKVTableSortedKeys(t *testing.T) {
+	kv := map[string]string{"b": "2", "a": "1", "c": "3"}
+	lines := renderKVTable(kv, 100)
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d", len(lines))
+	}
+	// Extract keys left of the first ':' and trim padding
+	keys := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		parts := strings.SplitN(ln, ":", 2)
+		if len(parts) == 0 {
+			t.Fatalf("unexpected table line format: %q", ln)
+		}
+		keys = append(keys, strings.TrimSpace(parts[0]))
+	}
+	want := []string{"a", "b", "c"}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("sorted keys mismatch: got %v want %v", keys, want)
+		}
 	}
 }
 

@@ -416,21 +416,26 @@ func toKVFromMap(m map[string]interface{}) map[string]string {
 }
 
 func renderKVTable(kv map[string]string, w int) []string {
-	lines := make([]string, 0, len(kv))
-	maxK := 0
-	for k := range kv {
-		if len(k) > maxK {
-			maxK = len(k)
-		}
-	}
-	for k, v := range kv {
-		line := fmt.Sprintf("%-*s: %s", maxK, k, v)
-		if runewidth.StringWidth(line) > w {
-			line = runewidth.Truncate(line, w, "…")
-		}
-		lines = append(lines, line)
-	}
-	return lines
+    // Stable lexical order of keys for deterministic table view
+    keys := make([]string, 0, len(kv))
+    for k := range kv { keys = append(keys, k) }
+    sort.Strings(keys)
+
+    maxK := 0
+    for _, k := range keys {
+        if len(k) > maxK { maxK = len(k) }
+    }
+
+    lines := make([]string, 0, len(keys))
+    for _, k := range keys {
+        v := kv[k]
+        line := fmt.Sprintf("%-*s: %s", maxK, k, v)
+        if runewidth.StringWidth(line) > w {
+            line = runewidth.Truncate(line, w, "…")
+        }
+        lines = append(lines, line)
+    }
+    return lines
 }
 
 func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, fetched string) {
