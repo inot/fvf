@@ -514,8 +514,73 @@ func runInteractiveStream(opts options, client *vault.Client, matcher *regexp.Re
         return lastTTL, middle, right
     }
 
+    // Idle + token-expired auto-exit wiring
+    quitCh := make(chan struct{})
+    activityCh := make(chan struct{}, 1)
+
+    // Track last activity; seed with now so we don't exit immediately
+    lastActivity := time.Now()
+    go func() {
+        for {
+            select {
+            case <-activityCh:
+                lastActivity = time.Now()
+            case <-ctx.Done():
+                return
+            }
+        }
+    }()
+
+    // Monitor token TTL and idle time; when both conditions meet, signal quit
+    go func() {
+        ticker := time.NewTicker(10 * time.Second)
+        defer ticker.Stop()
+        signaled := false
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            case <-ticker.C:
+                // Check TTL
+                ttlSeconds := int64(-1)
+                ctxTTL, cancelTTL := context.WithTimeout(context.Background(), 3*time.Second)
+                if sec, err := client.Logical().ReadWithContext(ctxTTL, "auth/token/lookup-self"); err == nil && sec != nil {
+                    if v, ok := sec.Data["ttl"]; ok {
+                        switch t := v.(type) {
+                        case json.Number:
+                            if s, e := t.Int64(); e == nil { ttlSeconds = s }
+                        case float64:
+                            ttlSeconds = int64(t)
+                        case int64:
+                            ttlSeconds = t
+                        case int:
+                            ttlSeconds = int64(t)
+                        case string:
+                            if t != "" && strings.IndexFunc(t, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+                                if s, e := strconv.ParseInt(t, 10, 64); e == nil { ttlSeconds = s }
+                            } else if d, e := time.ParseDuration(t); e == nil {
+                                ttlSeconds = int64(d.Seconds())
+                            }
+                        }
+                    }
+                }
+                cancelTTL()
+
+                if ttlSeconds <= 0 && time.Since(lastActivity) >= 5*time.Minute {
+                    if !signaled {
+                        // Inform the user why we are exiting (stderr; green when TTY)
+                        printGreenHint("fvf: Vault token expired and no activity for 5m — exiting")
+                        close(quitCh)
+                        signaled = true
+                        return
+                    }
+                }
+            }
+        }
+    }()
+
     // Start UI; preview enabled if -values or -json
-    uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, fetcher, statusProvider)
+    uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, fetcher, statusProvider, quitCh, activityCh)
 	// Ensure we stop walking
 	cancel()
 	// Prefer UI error if any, else walker error (non-blocking read if goroutine still running)
