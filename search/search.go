@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	vault "github.com/hashicorp/vault/api"
 )
@@ -432,27 +433,54 @@ func DetectKV2(ctx context.Context, c *vault.Client, start string) (bool, bool) 
 	return false, true
 }
 
-// NewVaultClient creates a vault client from env configuration and optional token discovery
+// NewVaultClient creates a vault client from env configuration and optional token discovery.
+// Requirements:
+// - VAULT_ADDR must be set; if not, return an error instead of defaulting to 127.0.0.1:8200
+// - If VAULT_TOKEN is not set, attempt to read from ~/.vault-token
 func NewVaultClient() (*vault.Client, error) {
-	cfg := vault.DefaultConfig()
-	if err := cfg.ReadEnvironment(); err != nil {
-		return nil, err
-	}
-	c, err := vault.NewClient(cfg)
-	if err != nil {
-		return nil, err
-	}
-	// Token: prefer env, then fallback to ~/.vault-token. If none, continue without a token
-	if tok := os.Getenv("VAULT_TOKEN"); tok != "" {
-		c.SetToken(tok)
-	} else if home, _ := os.UserHomeDir(); home != "" {
-		if b, err := os.ReadFile(path.Join(home, ".vault-token")); err == nil {
-			if t := strings.TrimSpace(string(b)); t != "" {
-				c.SetToken(t)
-			}
-		}
-	}
-	return c, nil
+    // Enforce explicit address to avoid accidental localhost default
+    addr := strings.TrimSpace(os.Getenv("VAULT_ADDR"))
+    if addr == "" {
+        return nil, fmt.Errorf("VAULT_ADDR is required; please export VAULT_ADDR (e.g., https://vault.example.com:8200)")
+    }
+
+    cfg := vault.DefaultConfig()
+    // Allow other settings from env, but the address must come from VAULT_ADDR we validated above
+    if err := cfg.ReadEnvironment(); err != nil {
+        return nil, err
+    }
+    cfg.Address = addr
+
+    c, err := vault.NewClient(cfg)
+    if err != nil {
+        return nil, err
+    }
+    // Token: prefer env, then fallback to ~/.vault-token. Validate if present.
+    var tokenSource string
+    if tok := os.Getenv("VAULT_TOKEN"); tok != "" {
+        c.SetToken(tok)
+        tokenSource = "env"
+    } else if home, _ := os.UserHomeDir(); home != "" {
+        tokenPath := path.Join(home, ".vault-token")
+        if b, err := os.ReadFile(tokenPath); err == nil {
+            if t := strings.TrimSpace(string(b)); t != "" {
+                c.SetToken(t)
+                tokenSource = tokenPath
+            }
+        }
+    }
+    if tokenSource != "" {
+        // Validate that the token is valid for this VAULT_ADDR by calling lookup-self
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        if _, err := c.Logical().ReadWithContext(ctx, "auth/token/lookup-self"); err != nil {
+            if tokenSource == "env" {
+                return nil, fmt.Errorf("VAULT_TOKEN is not valid for VAULT_ADDR %s: %w", addr, err)
+            }
+            return nil, fmt.Errorf("token from %s is not valid for VAULT_ADDR %s: %w", tokenSource, addr, err)
+        }
+    }
+    return c, nil
 }
 
 // CheckConnection verifies the Vault server is reachable by calling the health endpoint.
