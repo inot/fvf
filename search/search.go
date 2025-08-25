@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	vault "github.com/hashicorp/vault/api"
 )
@@ -19,6 +20,108 @@ type FoundItem struct {
 	Value interface{} `json:"value,omitempty"`
 }
 
+// WalkVaultStream recursively walks the given start path and sends matching items to outCh as they are found.
+// It respects context cancellation. When finished (or on error), it closes doneCh by sending the first error (nil on success)
+// via errCh if provided.
+func WalkVaultStream(
+    ctx context.Context,
+    logical LogicalAPI,
+    start string,
+    kv2 bool,
+    maxDepth int,
+    matcher *regexp.Regexp,
+    withValues bool,
+    outCh chan<- FoundItem,
+) error {
+    mount, inner := SplitMount(start)
+    return recurseStream(ctx, logical, mount, inner, kv2, 0, maxDepth, matcher, withValues, outCh)
+}
+
+func recurseStream(
+    ctx context.Context,
+    logical LogicalAPI,
+    mount, inner string,
+    kv2 bool,
+    depth, maxDepth int,
+    matcher *regexp.Regexp,
+    withValues bool,
+    outCh chan<- FoundItem,
+) error {
+    if maxDepth > 0 && depth > maxDepth {
+        return nil
+    }
+
+    listPath := ListAPIPath(mount, inner, kv2)
+    sec, err := logical.ListWithContext(ctx, listPath)
+    if err != nil {
+        return err
+    }
+    if sec == nil || sec.Data == nil {
+        return handleLeafStream(ctx, logical, mount, inner, kv2, matcher, withValues, outCh)
+    }
+
+    rawKeys, ok := sec.Data["keys"].([]interface{})
+    if !ok {
+        return fmt.Errorf("unexpected list response at %s", listPath)
+    }
+    for _, k := range rawKeys {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        default:
+        }
+        key, _ := k.(string)
+        if strings.HasSuffix(key, "/") {
+            nextDepth := depth + 1
+            if maxDepth > 0 && nextDepth >= maxDepth {
+                continue
+            }
+            nextInner := joinNonEmpty(strings.TrimSuffix(inner, "/"), strings.TrimSuffix(key, "/"))
+            if err := recurseStream(ctx, logical, mount, nextInner, kv2, nextDepth, maxDepth, matcher, withValues, outCh); err != nil {
+                return err
+            }
+        } else {
+            if maxDepth > 0 && (depth+1) > maxDepth {
+                continue
+            }
+            leafInner := joinNonEmpty(inner, key)
+            if err := handleLeafStream(ctx, logical, mount, leafInner, kv2, matcher, withValues, outCh); err != nil {
+                return err
+            }
+        }
+    }
+    return nil
+}
+
+func handleLeafStream(
+    ctx context.Context,
+    logical LogicalAPI,
+    mount, inner string,
+    kv2 bool,
+    matcher *regexp.Regexp,
+    withValues bool,
+    outCh chan<- FoundItem,
+) error {
+    logicalPath := path.Clean(joinNonEmpty(mount, inner))
+    base := path.Base(logicalPath)
+    matches := NameOrRegexMatch(base, logicalPath, matcher)
+
+    if withValues {
+        val, err := ReadSecret(ctx, logical, mount, inner, kv2)
+        if err != nil {
+            return err
+        }
+        if matches {
+            outCh <- FoundItem{Path: logicalPath, Value: val}
+        }
+        return nil
+    }
+
+    if matches {
+        outCh <- FoundItem{Path: logicalPath}
+    }
+    return nil
+}
 // ListMountsWithFallback attempts to list mounts using the standard API, and if
 // permission is denied (403), it falls back to the internal UI endpoint
 // sys/internal/ui/mounts, which is often permitted to less privileged users.
@@ -330,27 +433,54 @@ func DetectKV2(ctx context.Context, c *vault.Client, start string) (bool, bool) 
 	return false, true
 }
 
-// NewVaultClient creates a vault client from env configuration and optional token discovery
+// NewVaultClient creates a vault client from env configuration and optional token discovery.
+// Requirements:
+// - VAULT_ADDR must be set; if not, return an error instead of defaulting to 127.0.0.1:8200
+// - If VAULT_TOKEN is not set, attempt to read from ~/.vault-token
 func NewVaultClient() (*vault.Client, error) {
-	cfg := vault.DefaultConfig()
-	if err := cfg.ReadEnvironment(); err != nil {
-		return nil, err
-	}
-	c, err := vault.NewClient(cfg)
-	if err != nil {
-		return nil, err
-	}
-	// Token: prefer env, then fallback to ~/.vault-token. If none, continue without a token
-	if tok := os.Getenv("VAULT_TOKEN"); tok != "" {
-		c.SetToken(tok)
-	} else if home, _ := os.UserHomeDir(); home != "" {
-		if b, err := os.ReadFile(path.Join(home, ".vault-token")); err == nil {
-			if t := strings.TrimSpace(string(b)); t != "" {
-				c.SetToken(t)
-			}
-		}
-	}
-	return c, nil
+    // Enforce explicit address to avoid accidental localhost default
+    addr := strings.TrimSpace(os.Getenv("VAULT_ADDR"))
+    if addr == "" {
+        return nil, fmt.Errorf("VAULT_ADDR is required; please export VAULT_ADDR (e.g., https://vault.example.com:8200)")
+    }
+
+    cfg := vault.DefaultConfig()
+    // Allow other settings from env, but the address must come from VAULT_ADDR we validated above
+    if err := cfg.ReadEnvironment(); err != nil {
+        return nil, err
+    }
+    cfg.Address = addr
+
+    c, err := vault.NewClient(cfg)
+    if err != nil {
+        return nil, err
+    }
+    // Token: prefer env, then fallback to ~/.vault-token. Validate if present.
+    var tokenSource string
+    if tok := os.Getenv("VAULT_TOKEN"); tok != "" {
+        c.SetToken(tok)
+        tokenSource = "env"
+    } else if home, _ := os.UserHomeDir(); home != "" {
+        tokenPath := path.Join(home, ".vault-token")
+        if b, err := os.ReadFile(tokenPath); err == nil {
+            if t := strings.TrimSpace(string(b)); t != "" {
+                c.SetToken(t)
+                tokenSource = tokenPath
+            }
+        }
+    }
+    if tokenSource != "" {
+        // Validate that the token is valid for this VAULT_ADDR by calling lookup-self
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        if _, err := c.Logical().ReadWithContext(ctx, "auth/token/lookup-self"); err != nil {
+            if tokenSource == "env" {
+                return nil, fmt.Errorf("VAULT_TOKEN is not valid for VAULT_ADDR %s: %w", addr, err)
+            }
+            return nil, fmt.Errorf("token from %s is not valid for VAULT_ADDR %s: %w", tokenSource, addr, err)
+        }
+    }
+    return c, nil
 }
 
 // CheckConnection verifies the Vault server is reachable by calling the health endpoint.

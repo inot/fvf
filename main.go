@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,102 @@ type options struct {
 	paths       []string
 }
 
+// formatTTLHuman converts seconds into a compact human readable TTL like:
+//  - "2y 3mo 1w" or "31d 23h" or "2h 5m 3s"
+// Uses approximate months (30d) and years (365d). Emits up to 3 components.
+func formatTTLHuman(secs int64) string {
+    if secs < 0 {
+        return "n/a"
+    }
+    if secs == 0 {
+        return "0s"
+    }
+    const (
+        minute = int64(60)
+        hour   = 60 * minute
+        day    = 24 * hour
+        week   = 7 * day
+        month  = 30 * day   // approximate
+        year   = 365 * day  // approximate
+    )
+
+    parts := make([]string, 0, 3)
+    rem := secs
+
+    // Years
+    if rem >= year {
+        y := rem / year
+        rem %= year
+        parts = append(parts, fmt.Sprintf("%dy", y))
+        if len(parts) == 3 { return strings.Join(parts, " ") }
+    }
+
+    // Decide whether to use months: only if remaining days >= 60
+    // to avoid converting ~1 month into "1mo"; prefer days for ~30-59d.
+    // Compute remaining full days and sub-day remainder now to help week rules.
+    remDays := rem / day
+    subDay := rem % day
+
+    if remDays >= 60 {
+        mo := remDays / 30
+        remDays = remDays % 30
+        rem = remDays*day + subDay
+        if mo > 0 {
+            parts = append(parts, fmt.Sprintf("%dmo", mo))
+            if len(parts) == 3 { return strings.Join(parts, " ") }
+        }
+    }
+
+    // Recompute remDays and subDay after potential month extraction
+    remDays = rem / day
+    subDay = rem % day
+
+    // Weeks: only if there is no sub-day remainder to keep days when hours/mins exist
+    if subDay == 0 && remDays >= 7 {
+        w := remDays / 7
+        remDays = remDays % 7
+        rem = remDays*day + subDay
+        if w > 0 {
+            parts = append(parts, fmt.Sprintf("%dw", w))
+            if len(parts) == 3 { return strings.Join(parts, " ") }
+        }
+    }
+
+    // Days
+    if rem >= day {
+        d := rem / day
+        rem %= day
+        parts = append(parts, fmt.Sprintf("%dd", d))
+        if len(parts) == 3 { return strings.Join(parts, " ") }
+    }
+
+    // Hours
+    if rem >= hour {
+        h := rem / hour
+        rem %= hour
+        parts = append(parts, fmt.Sprintf("%dh", h))
+        if len(parts) == 3 { return strings.Join(parts, " ") }
+    }
+
+    // Minutes
+    if rem >= minute {
+        m := rem / minute
+        rem %= minute
+        parts = append(parts, fmt.Sprintf("%dm", m))
+        if len(parts) == 3 { return strings.Join(parts, " ") }
+    }
+
+    // Seconds
+    if rem > 0 && len(parts) < 3 {
+        parts = append(parts, fmt.Sprintf("%ds", rem))
+    }
+
+    if len(parts) == 0 {
+        return "<1s"
+    }
+    return strings.Join(parts, " ")
+}
+
 func main() {
 	opts := parseFlags()
 	search.SetNamePart(opts.namePart)
@@ -63,16 +160,16 @@ func main() {
 		fatal(err)
 	}
 
-	items, err := collectItems(ctx, client, opts, matcher)
-	if err != nil {
-		fatal(err)
-	}
-
 	if opts.interactive {
-		if err := runInteractive(items, opts, client); err != nil {
+		if err := runInteractiveStream(opts, client, matcher); err != nil {
 			fatal(err)
 		}
 		return
+	}
+
+	items, err := collectItems(ctx, client, opts, matcher)
+	if err != nil {
+		fatal(err)
 	}
 
 	if err := printItems(items, opts); err != nil {
@@ -111,7 +208,7 @@ func parseFlagsWithArgs(args []string) options {
 	fs.IntVar(&opts.maxDepth, "max-depth", 0, "Maximum recursion depth (0 = unlimited)")
 	fs.BoolVar(&opts.jsonOut, "json", false, "Output JSON array instead of lines")
 	fs.DurationVar(&opts.timeout, "timeout", 30*time.Second, "Total timeout for the operation")
-	fs.BoolVar(&opts.interactive, "interactive", false, "Interactive TUI filter (like fzf): type to filter, Enter prints secret value")
+	fs.BoolVar(&opts.interactive, "interactive", false, "Interactive TUI filter (like fzf): type to filter, Enter prints secret value (interactive uses streaming by default)")
 	fs.BoolVar(&opts.showVersion, "version", false, "Print version information and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -283,7 +380,10 @@ func collectForSinglePath(ctx context.Context, client *vault.Client, opts option
 	return search.WalkVault(ctx, client.Logical(), opts.startPath, kv2, opts.maxDepth, matcher, valuesDuringWalk(opts))
 }
 
-func runInteractive(items []search.FoundItem, opts options, client *vault.Client) error {
+// (legacy non-stream interactive runner removed; interactive now streams by default)
+
+func runInteractiveStream(opts options, client *vault.Client, matcher *regexp.Regexp) error {
+	// Build the same lazy fetcher used by non-streaming interactive mode
 	fetcher := func(p string) (string, error) {
 		perReqTimeout := 15 * time.Second
 		attempt := func() (interface{}, error) {
@@ -311,8 +411,123 @@ func runInteractive(items []search.FoundItem, opts options, client *vault.Client
 		// Otherwise return a human-friendly raw representation where strings are unquoted.
 		return formatValueRaw(val, true), nil
 	}
-	// Show preview if either -values or -json is set.
-	return ui.Run(items, opts.printValues || opts.jsonOut, fetcher)
+
+
+	// Stream items into the UI
+	itemsCh := make(chan search.FoundItem, 256)
+	errCh := make(chan error, 1)
+
+	// Context to allow cancellation when UI exits
+	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+	go func() {
+		defer close(itemsCh)
+		defer close(errCh)
+		defer cancel()
+
+		// Helper to walk a single start path
+		walkOne := func(start string) error {
+			kv2 := decideKV2ForPath(ctx, client, start, opts)
+			return search.WalkVaultStream(ctx, client.Logical(), start, kv2, opts.maxDepth, matcher, false /*withValues*/, itemsCh)
+		}
+
+		// Route by input, mirroring collectItems()
+		var err error
+		if strings.TrimSpace(opts.startPath) == "" && len(opts.paths) == 0 {
+			var mounts map[string]*vault.MountOutput
+			mounts, err = search.ListMountsWithFallback(ctx, client)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			for mntPath, m := range mounts {
+				if m.Type != "kv" {
+					continue
+				}
+				mnt := strings.TrimSuffix(mntPath, "/")
+				kv2 := decideKV2ForMountMeta(opts, m.Options)
+				if e := search.WalkVaultStream(ctx, client.Logical(), mnt, kv2, opts.maxDepth, matcher, false, itemsCh); e != nil {
+					err = e
+					break
+				}
+			}
+		} else if len(opts.paths) > 0 {
+			for _, p := range opts.paths {
+				if e := walkOne(p); e != nil {
+					err = e
+					break
+				}
+			}
+		} else {
+			err = walkOne(opts.startPath)
+		}
+		errCh <- err
+	}()
+
+    // Build StatusProvider for the UI status bar
+    // Right: version, Middle: server, Left: token TTL (cached refresh)
+    addr := client.Address()
+    versionStr := fmt.Sprintf("fvf %s", version)
+    var (
+        lastTTL string
+        lastTTLAt time.Time
+    )
+    statusProvider := func() (string, string, string) {
+        // Refresh TTL at most every 10s to reduce API calls
+        if time.Since(lastTTLAt) > 10*time.Second {
+            ctxTTL, cancelTTL := context.WithTimeout(context.Background(), 3*time.Second)
+            defer cancelTTL()
+            if sec, err := client.Logical().ReadWithContext(ctxTTL, "auth/token/lookup-self"); err == nil && sec != nil {
+                // ttl may be number or string; convert to seconds and humanize
+                ttlSeconds := int64(-1)
+                if v, ok := sec.Data["ttl"]; ok {
+                    switch t := v.(type) {
+                    case json.Number:
+                        if s, e := t.Int64(); e == nil { ttlSeconds = s }
+                    case float64:
+                        ttlSeconds = int64(t)
+                    case int64:
+                        ttlSeconds = t
+                    case int:
+                        ttlSeconds = int64(t)
+                    case string:
+                        // If purely digits, parse as seconds. Else try time.ParseDuration.
+                        if t != "" && strings.IndexFunc(t, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+                            if s, e := strconv.ParseInt(t, 10, 64); e == nil { ttlSeconds = s }
+                        } else if d, e := time.ParseDuration(t); e == nil {
+                            ttlSeconds = int64(d.Seconds())
+                        }
+                    }
+                }
+                if ttlSeconds >= 0 {
+                    lastTTL = "TTL: " + formatTTLHuman(ttlSeconds)
+                } else {
+                    lastTTL = "TTL: n/a"
+                }
+                lastTTLAt = time.Now()
+            } else {
+                lastTTL = "TTL: ?"
+                lastTTLAt = time.Now()
+            }
+        }
+        middle := addr
+        right := versionStr
+        return lastTTL, middle, right
+    }
+
+    // Start UI; preview enabled if -values or -json
+    uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, fetcher, statusProvider)
+	// Ensure we stop walking
+	cancel()
+	// Prefer UI error if any, else walker error (non-blocking read if goroutine still running)
+	if uiErr != nil {
+		return uiErr
+	}
+	select {
+	case e := <-errCh:
+		return e
+	default:
+		return nil
+	}
 }
 
 func printItems(items []search.FoundItem, opts options) error {

@@ -1,6 +1,6 @@
 # fvf
 
-A fast interactive finder for HashiCorp Vault KV secrets. Think “fzf for Vault”.
+A fast interactive finder for HashiCorp Vault KV secrets. Think “fzf for Vault”. 100% Vibecodding.
 
 - Interactive TUI to filter secrets across KV v1/v2.
 - Lazy value preview in the right pane.
@@ -10,49 +10,29 @@ A fast interactive finder for HashiCorp Vault KV secrets. Think “fzf for Vault
 
 ## Requirements
 
-- Go 1.20+ (module currently targets Go 1.24)
 - HashiCorp Vault access
 - Environment:
   - VAULT_ADDR (e.g., <https://vault.example.com:8200>)
-  -
   - VAULT_TOKEN (or export a token from your auth flow)
 
-## Install / Build
+## Usage
 
-- Host build:
+### Basic usage
 
-  ```sh
-  make build
-  ```
-
-  Outputs: `dist/fvf`
-
-- Cross-compile (macOS arm64, Linux amd64/arm64, Windows amd64):
-
-  ```sh
-  make build-all
-  ```
-
-  Outputs in `dist/`:
-  - `fvf-darwin-arm64`
-  - `fvf-linux-amd64`
-  - `fvf-linux-arm64`
-  - `fvf-windows-amd64.exe`
-
-## Versioning
-
-- If [./version] exists, its contents define the version (whitespace trimmed; trailing dots removed).
-- Else falls back to `git describe`, else `0.1.0`.
-- Build embeds:
-  - `main.version`, `main.commit`, `main.date`
-
-Check version:
+Set Vault environment and run fvf:
 
 ```sh
-./fvf -version
+export VAULT_ADDR="https://vault.example.com:8200"
+export VAULT_TOKEN="...your token..."
+
+# Start interactive TUI (default)
+./fvf
+
+# Force interactive TUI (streaming by default)
+./fvf -interactive
 ```
 
-## Usage
+### Advanced Usage
 
 - No flags: interactive TUI
 
@@ -62,6 +42,17 @@ Check version:
 
   - Type to filter; Up/Down to navigate; Enter prints secret value.
   - Right pane shows value preview (when available).
+
+- Interactive streaming (default in interactive mode; progressive results, faster startup):
+
+  ```sh
+  # Interactive is default with no flags
+  ./fvf
+  # Or explicitly force interactive
+  ./fvf -interactive
+  # Can be combined with -values or -json for preview mode
+  ./fvf -interactive -values
+  ```
 
 - Interactive with values:
 
@@ -126,7 +117,7 @@ Check version:
   ./fvf -max-depth 2 -timeout 45s
   ```
 
-### Flags
+#### Flags
 
 - -path string          Start path to recurse (default: all KV mounts)
 - -paths string         Comma-separated list of start paths (e.g., kv/app1/,kv/app2/)
@@ -139,8 +130,47 @@ Check version:
 - -max-depth int        Max recursion depth (0 = unlimited)
 - -json                 Output JSON array (TTY: opens interactive with JSON preview)
 - -timeout duration     Total timeout (default 30s)
-- -interactive          Force interactive TUI
+- -interactive          Force interactive TUI (interactive streams results by default)
 - -version             Print version and exit
+
+## Requirements for Build
+
+- Go 1.20+ (module currently targets Go 1.24)
+
+## Build
+
+- Host build:
+
+  ```sh
+  make build
+  ```
+
+  Outputs: `dist/fvf`
+
+- Cross-compile (macOS arm64, Linux amd64/arm64, Windows amd64):
+
+  ```sh
+  make build-all
+  ```
+
+  Outputs in `dist/`:
+  - `fvf-darwin-arm64`
+  - `fvf-linux-amd64`
+  - `fvf-linux-arm64`
+  - `fvf-windows-amd64.exe`
+
+## Versioning
+
+- If [./version] exists, its contents define the version (whitespace trimmed; trailing dots removed).
+- Else falls back to `git describe`, else `0.1.0`.
+- Build embeds:
+  - `main.version`, `main.commit`, `main.date`
+
+Check version:
+
+```sh
+./fvf -version
+```
 
 ## Makefile targets
 
@@ -198,3 +228,9 @@ MIT
 - Interactive preview: added a separator under the selected path and render values as a two-column Key/Value table when possible for improved readability.
 - JSON preview mode: when `-json` is used on a TTY, the interactive preview shows pretty-printed JSON; non-interactive `-json` output remains unchanged.
 - Interactive trigger: when stdout is a TTY, passing either `-values` or `-json` will launch the interactive UI with a preview pane.
+- Streaming UI is now the default behavior for interactive mode; the `-stream` flag was removed.
+- Interactive list: highlight matched query substrings in results (white on gray; bold when selected).
+- Tests: added unit tests for UI helpers and value formatting.
+- Status bar: added bottom bar with left/middle/right segments — token TTL (left), Vault server (middle), app version (right).
+- TTL formatting: humanized long durations (years/months/weeks/days/hours/minutes/seconds) with up to 3 components (e.g., `31d 23h 36m`).
+- TTL refresh: cached with periodic refresh (~10s) to avoid excessive API calls.
