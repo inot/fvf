@@ -304,7 +304,9 @@ func buildMatcher(pattern string) (*regexp.Regexp, error) {
 // valuesDuringWalk returns whether values should be fetched during Walk.
 // In interactive mode we avoid fetching to keep the UI responsive.
 func valuesDuringWalk(opts options) bool {
-	return opts.printValues && !opts.interactive
+    // When producing JSON output in non-interactive mode, include values.
+    // Also include values when -values is explicitly requested.
+    return (opts.printValues || opts.jsonOut) && !opts.interactive
 }
 
 // decideKV2ForMountMeta determines kv2 based on CLI flags and mount metadata.
