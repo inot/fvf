@@ -33,6 +33,65 @@ func putLine(s tcell.Screen, x, y int, text string) {
 	}
 }
 
+// wrapTableLines wraps table-formatted lines like "<key-padded>: <value>" so that wrapped
+// segments are indented to align under the value column. Lines without ": " are returned as-is.
+func wrapTableLines(lines []string, w int) []string {
+    out := make([]string, 0, len(lines))
+    for _, ln := range lines {
+        // Find the first occurrence of ": " which separates key and value
+        idx := strings.Index(ln, ": ")
+        if idx <= 0 {
+            // Not a table line; leave as-is (will be truncated by caller if needed)
+            out = append(out, ln)
+            continue
+        }
+        padWidth := idx + 2 // include ": "
+        keyPrefix := ln[:padWidth]
+        val := ln[padWidth:]
+        // Available width for value per line
+        avail := w - runewidth.StringWidth(keyPrefix)
+        if avail <= 0 {
+            // No room; fall back to truncation of whole line by caller
+            out = append(out, ln)
+            continue
+        }
+        // Reflow value into chunks that fit within avail display columns
+        cur := make([]rune, 0, len(val))
+        curW := 0
+        first := true
+        flush := func() {
+            if len(cur) == 0 {
+                // still output empty segment to keep structure
+                if first {
+                    out = append(out, keyPrefix)
+                } else {
+                    out = append(out, strings.Repeat(" ", padWidth))
+                }
+                return
+            }
+            seg := string(cur)
+            if first {
+                out = append(out, keyPrefix+seg)
+                first = false
+            } else {
+                out = append(out, strings.Repeat(" ", padWidth)+seg)
+            }
+            cur = cur[:0]
+            curW = 0
+        }
+        for _, r := range val {
+            rw := runewidth.RuneWidth(r)
+            if curW+rw > avail {
+                flush()
+            }
+            cur = append(cur, r)
+            curW += rw
+        }
+        flush()
+    }
+    return out
+}
+
 // drawStatusBar renders a status bar on a single line with left, middle, and right aligned segments.
 func drawStatusBar(s tcell.Screen, x, y, w int, status StatusProvider) {
 	if w <= 0 || status == nil {
@@ -162,7 +221,7 @@ func putLineWithHighlights(s tcell.Screen, x, y int, text, query string, baseSty
 // It mirrors the old Run() behavior, including lazy preview fetching when printValues is true.
 // quit: when a value arrives, the UI exits gracefully.
 // activity: UI sends an event on any user interaction (keys/mouse) to help the caller detect idleness.
-func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueFetcher, status StatusProvider, quit <-chan struct{}, activity chan<- struct{}) error {
+func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bool, fetcher ValueFetcher, status StatusProvider, quit <-chan struct{}, activity chan<- struct{}) error {
 	s, err := tcell.NewScreen()
 	if err != nil {
 		return err
@@ -198,6 +257,8 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
 		}()
 	}
 
+	previewWrap := false
+
 	redraw := func() {
 		s.Clear()
 		w, h := s.Size()
@@ -205,7 +266,11 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
 		prompt := "> " + query
 		putLine(s, 0, 0, prompt)
 
-		help := fmt.Sprintf("%d/%d  (Up/Down to move, Enter to select, Esc to quit)", len(filtered), len(items))
+		wrapState := "off"
+		if previewWrap {
+			wrapState = "on"
+		}
+		help := fmt.Sprintf("%d/%d  (Up/Down: move, Enter: select, Tab: wrap[%s], Esc: quit)", len(filtered), len(items), wrapState)
 		putLine(s, 0, 1, help)
 
 		contentTop := 2
@@ -281,7 +346,7 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
 					}
 				}
 			}
-			drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, filtered, cursor, printValues, val)
+			drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, filtered, cursor, printValues, jsonPreview, val, previewWrap)
 		}
 
 		// Draw bottom status bar
@@ -411,8 +476,15 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, fetcher ValueF
 					query = query[:len(query)-1]
 					applyFilter()
 				}
+			case tcell.KeyTAB:
+				previewWrap = !previewWrap
 			case tcell.KeyRune:
 				r := ev.Rune()
+				// Some terminals send Tab as a rune instead of KeyTAB.
+				if r == '\t' {
+					previewWrap = !previewWrap
+					break
+				}
 				if r != 0 {
 					query += string(r)
 					applyFilter()
@@ -452,13 +524,94 @@ func isLikelyJSON(s string) bool {
 	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")
 }
 
+// toLinesFromJSONText tries to present JSON text with readable multi-line strings.
+// - If JSON is an object: render key: value; for string values, expand \n into actual new lines
+//   and indent continuation lines to align after "key: ".
+// - If JSON is a string: expand escapes and split into lines.
+// - Otherwise: pretty-print and split by newlines.
+func toLinesFromJSONText(s string) []string {
+	var v interface{}
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		// Fallback to original split
+		return strings.Split(s, "\n")
+	}
+	switch t := v.(type) {
+	case map[string]interface{}:
+		// Stable order
+		keys := make([]string, 0, len(t))
+		for k := range t { keys = append(keys, k) }
+		sort.Strings(keys)
+		lines := make([]string, 0, len(keys))
+		for _, k := range keys {
+			val := t[k]
+			switch sv := val.(type) {
+			case string:
+				parts := strings.Split(sv, "\n")
+				if len(parts) == 0 {
+					lines = append(lines, fmt.Sprintf("%s:", k))
+					continue
+				}
+				// first line with key
+				lines = append(lines, fmt.Sprintf("%s: %s", k, parts[0]))
+				// continuation lines aligned after "key: "
+				pad := strings.Repeat(" ", len(k)+2)
+				for i := 1; i < len(parts); i++ {
+					lines = append(lines, pad+parts[i])
+				}
+			default:
+				// marshal compact for non-strings
+				b, err := json.Marshal(val)
+				if err != nil { b = []byte(fmt.Sprintf("%v", val)) }
+				lines = append(lines, fmt.Sprintf("%s: %s", k, string(b)))
+			}
+		}
+		return lines
+	case string:
+		return strings.Split(t, "\n")
+	default:
+		b, err := json.MarshalIndent(t, "", "  ")
+		if err != nil { return strings.Split(s, "\n") }
+		return strings.Split(string(b), "\n")
+	}
+}
+
 func toKVFromLines(s string) map[string]string {
 	kv := make(map[string]string)
-	for _, ln := range strings.Split(s, "\n") {
-		if kvPair := strings.SplitN(ln, ":", 2); len(kvPair) == 2 {
-			kv[strings.TrimSpace(kvPair[0])] = strings.TrimSpace(kvPair[1])
+	var curKey string
+	var curVal []string
+	flush := func() {
+		if curKey != "" {
+			kv[curKey] = strings.TrimSpace(strings.Join(curVal, "\n"))
+			curKey = ""
+			curVal = nil
 		}
 	}
+	for _, raw := range strings.Split(s, "\n") {
+		ln := raw
+		if kvPair := strings.SplitN(ln, ":", 2); len(kvPair) == 2 {
+			// New key starts; flush previous if any
+			flush()
+			curKey = strings.TrimSpace(kvPair[0])
+			curVal = []string{strings.TrimSpace(kvPair[1])}
+			continue
+		}
+		// Continuation line: append only for indented or PEM/base64-ish blocks
+		if curKey != "" {
+			lnNoCR := strings.TrimRight(ln, "\r")
+			lnTrim := strings.TrimSpace(lnNoCR)
+			first := ""
+			if len(curVal) > 0 {
+				first = curVal[0]
+			}
+			isIndented := strings.HasPrefix(ln, " ") || strings.HasPrefix(ln, "\t")
+			looksPEM := strings.HasPrefix(first, "-----BEGIN ") || strings.HasPrefix(lnTrim, "-----END ")
+			looksB64 := len(lnTrim) >= 32 && isBase64Charset(lnTrim)
+			if isIndented || looksPEM || looksB64 {
+				curVal = append(curVal, lnNoCR)
+			}
+		}
+	}
+	flush()
 	return kv
 }
 
@@ -470,37 +623,140 @@ func toKVFromMap(m map[string]interface{}) map[string]string {
 	return kv
 }
 
-func renderKVTable(kv map[string]string, w int) []string {
-	// Stable lexical order of keys for deterministic table view
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+func renderKVTable(kv map[string]string) []string {
+    // Stable lexical order of keys for deterministic table view
+    keys := make([]string, 0, len(kv))
+    for k := range kv {
+        keys = append(keys, k)
+    }
+    sort.Strings(keys)
 
-	maxK := 0
-	for _, k := range keys {
-		if len(k) > maxK {
-			maxK = len(k)
-		}
-	}
+    maxK := 0
+    for _, k := range keys {
+        if len(k) > maxK {
+            maxK = len(k)
+        }
+    }
 
-	lines := make([]string, 0, len(keys))
-	for _, k := range keys {
-		v := kv[k]
-		line := fmt.Sprintf("%-*s: %s", maxK, k, v)
-		if runewidth.StringWidth(line) > w {
-			line = runewidth.Truncate(line, w, "…")
-		}
-		lines = append(lines, line)
-	}
-	return lines
+    lines := make([]string, 0, len(keys))
+    for _, k := range keys {
+        v := kv[k]
+        // If value looks like a PEM/certificate or a very long base64 blob, split nicely with indentation
+        pemLines := splitPEMish(v)
+        if len(pemLines) > 1 {
+            // First line with key and first pem line
+            lines = append(lines, fmt.Sprintf("%-*s: %s", maxK, k, pemLines[0]))
+            // Continuation lines aligned after "key: "
+            pad := strings.Repeat(" ", maxK+2)
+            for i := 1; i < len(pemLines); i++ {
+                lines = append(lines, pad+pemLines[i])
+            }
+            continue
+        }
+        // Generic multi-line support even if not PEM/base64
+        if strings.Contains(v, "\n") {
+            parts := strings.Split(v, "\n")
+            lines = append(lines, fmt.Sprintf("%-*s: %s", maxK, k, parts[0]))
+            pad := strings.Repeat(" ", maxK+2)
+            for i := 1; i < len(parts); i++ {
+                lines = append(lines, pad+parts[i])
+            }
+            continue
+        }
+        line := fmt.Sprintf("%-*s: %s", maxK, k, v)
+        lines = append(lines, line)
+    }
+    return lines
 }
 
-func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, fetched string) {
+// splitPEMish splits certificate/PEM-like strings or long base64 blobs into readable lines.
+// Rules:
+// - If input contains PEM headers (-----BEGIN ...----- / -----END ...-----), preserve headers
+//   and split the base64 body into 64-char lines.
+// - Else, if input is a single long base64-ish string (> 100 chars, only base64 charset),
+//   chunk into 64-char lines.
+// Returns a slice of lines; len==1 means no special handling applied.
+func splitPEMish(s string) []string {
+    if s == "" {
+        return []string{""}
+    }
+    // Quick path: if already has newlines and looks like PEM, normalize line lengths but keep structure
+    if strings.Contains(s, "-----BEGIN ") && strings.Contains(s, "-----END ") {
+        // Extract header, body, footer
+        lines := strings.Split(s, "\n")
+        hdrIdx, ftrIdx := -1, -1
+        for i, ln := range lines {
+            if strings.HasPrefix(strings.TrimSpace(ln), "-----BEGIN ") {
+                hdrIdx = i
+            }
+            if strings.HasPrefix(strings.TrimSpace(ln), "-----END ") {
+                ftrIdx = i
+            }
+        }
+        if hdrIdx != -1 && ftrIdx != -1 && ftrIdx >= hdrIdx {
+            hdr := strings.TrimSpace(lines[hdrIdx])
+            ftr := strings.TrimSpace(lines[ftrIdx])
+            // Concatenate body (strip spaces)
+            body := strings.Join(lines[hdrIdx+1:ftrIdx], "")
+            body = compactBase64(body)
+            chunks := chunkString(body, 64)
+            out := make([]string, 0, 2+len(chunks))
+            out = append(out, hdr)
+            out = append(out, chunks...)
+            out = append(out, ftr)
+            return out
+        }
+    }
+    // No explicit headers: treat as base64-ish if long enough and charset matches
+    compact := compactBase64(s)
+    if len(compact) >= 100 && isBase64Charset(compact) {
+        return chunkString(compact, 64)
+    }
+    return []string{s}
+}
+
+func isBase64Charset(s string) bool {
+    for _, r := range s {
+        if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=' {
+            continue
+        }
+        return false
+    }
+    return true
+}
+
+func compactBase64(s string) string {
+    // Remove whitespace
+    b := make([]rune, 0, len(s))
+    for _, r := range s {
+        if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+            continue
+        }
+        b = append(b, r)
+    }
+    return string(b)
+}
+
+func chunkString(s string, n int) []string {
+    if n <= 0 || len(s) <= n {
+        return []string{s}
+    }
+    out := make([]string, 0, (len(s)+n-1)/n)
+    for i := 0; i < len(s); i += n {
+        end := i + n
+        if end > len(s) {
+            end = len(s)
+        }
+        out = append(out, s[i:end])
+    }
+    return out
+}
+
+func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, jsonPreview bool, fetched string, wrap bool) {
 	if cursor < 0 || cursor >= len(filtered) || w <= 0 || h <= 0 {
 		return
 	}
+	// ... rest of the function remains the same ...
 	it := filtered[cursor]
 	lines := make([]string, 0, h)
 	lines = append(lines, it.Path)
@@ -511,22 +767,29 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 	}
 	if printValues {
 		if fetched != "" {
-			if isLikelyJSON(fetched) {
-				// Show JSON as-is when in JSON mode
+			if jsonPreview && isLikelyJSON(fetched) {
+				// Show pretty JSON as-is (already pretty if fetcher honored jsonOut)
 				lines = append(lines, strings.Split(fetched, "\n")...)
+			} else if isLikelyJSON(fetched) {
+				// Non-JSON preview mode: show as key: value with multiline expansion
+				lines = append(lines, toLinesFromJSONText(fetched)...)
 			} else {
 				// Try to render a key/value table from fetched lines like "k: v"
 				kv := toKVFromLines(fetched)
 				if len(kv) > 0 {
-					lines = append(lines, renderKVTable(kv, w)...)
+					lines = append(lines, renderKVTable(kv)...)
 				} else {
 					lines = append(lines, strings.Split(fetched, "\n")...)
 				}
 			}
 		} else if it.Value != nil {
-			if m, ok := it.Value.(map[string]interface{}); ok {
+			if jsonPreview {
+				if b, err := json.MarshalIndent(it.Value, "", "  "); err == nil {
+					lines = append(lines, strings.Split(string(b), "\n")...)
+				}
+			} else if m, ok := it.Value.(map[string]interface{}); ok {
 				kv := toKVFromMap(m)
-				lines = append(lines, renderKVTable(kv, w)...)
+				lines = append(lines, renderKVTable(kv)...)
 			} else if b, err := json.MarshalIndent(it.Value, "", "  "); err == nil {
 				lines = append(lines, strings.Split(string(b), "\n")...)
 			}
@@ -540,12 +803,59 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 		lines = append(lines, "(no values to preview)")
 		lines = append(lines, "Tip: run with -values to include secret values")
 	}
-	// Render within the pane bounds, truncating long lines.
-	for i := 0; i < h && i < len(lines); i++ {
-		ln := lines[i]
-		if runewidth.StringWidth(ln) > w {
-			ln = runewidth.Truncate(ln, w, "…")
+    // If wrapping is enabled and we're in values-table mode, perform table-aware wrapping so
+    // value continuations align under the value column instead of starting at column 0.
+    if wrap && printValues && !jsonPreview && len(lines) > 2 {
+        head := lines[:2]
+        body := lines[2:]
+        body = wrapTableLines(body, w)
+        lines = append(head, body...)
+        // After manual wrapping, render without further soft-wrap to avoid double wrapping.
+        wrap = false
+    }
+
+    // Render within the pane bounds. If wrap is enabled, soft-wrap by display width; otherwise truncate.
+    if !wrap {
+        for i := 0; i < h && i < len(lines); i++ {
+            ln := lines[i]
+            if runewidth.StringWidth(ln) > w {
+                ln = runewidth.Truncate(ln, w, "…")
+            }
+            putLine(s, x, y+i, ln)
+        }
+        return
+    }
+
+	// Soft-wrap: expand lines into wrapped segments up to height h
+	outRows := 0
+	for _, ln := range lines {
+		if outRows >= h {
+			break
 		}
-		putLine(s, x, y+i, ln)
+		// split ln into chunks of display width w
+		seg := make([]rune, 0, len(ln))
+		width := 0
+		for _, r := range ln {
+			rw := runewidth.RuneWidth(r)
+			if width+rw > w {
+				// flush current segment
+				putLine(s, x, y+outRows, string(seg))
+				outRows++
+				if outRows >= h {
+					break
+				}
+				seg = seg[:0]
+				width = 0
+			}
+			if outRows >= h {
+				break
+			}
+			seg = append(seg, r)
+			width += rw
+		}
+		if outRows < h {
+			putLine(s, x, y+outRows, string(seg))
+			outRows++
+		}
 	}
 }
