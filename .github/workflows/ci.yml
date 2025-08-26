@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build-and-package:
-    runs-on: eva
+    runs-on: self-hosted
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
