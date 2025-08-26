@@ -27,115 +27,129 @@ var (
 )
 
 type options struct {
-	startPath   string
-	kv2         bool
-	kv1         bool
-	forceKV2    bool
-	match       string
-	namePart    string
-	printValues bool
-	maxDepth    int
-	jsonOut     bool
-	timeout     time.Duration
-	interactive bool
-	showVersion bool
-	paths       []string
+	startPath     string
+	kv2           bool
+	kv1           bool
+	forceKV2      bool
+	match         string
+	namePart      string
+	printValues   bool
+	maxDepth      int
+	jsonOut       bool
+	timeout       time.Duration
+	interactive   bool
+	showVersion   bool
+	paths         []string
+	idleExitAfter time.Duration
 }
 
 // formatTTLHuman converts seconds into a compact human readable TTL like:
-//  - "2y 3mo 1w" or "31d 23h" or "2h 5m 3s"
+//   - "2y 3mo 1w" or "31d 23h" or "2h 5m 3s"
+//
 // Uses approximate months (30d) and years (365d). Emits up to 3 components.
 func formatTTLHuman(secs int64) string {
-    if secs < 0 {
-        return "n/a"
-    }
-    if secs == 0 {
-        return "0s"
-    }
-    const (
-        minute = int64(60)
-        hour   = 60 * minute
-        day    = 24 * hour
-        week   = 7 * day
-        month  = 30 * day   // approximate
-        year   = 365 * day  // approximate
-    )
+	if secs < 0 {
+		return "n/a"
+	}
+	if secs == 0 {
+		return "0s"
+	}
+	const (
+		minute = int64(60)
+		hour   = 60 * minute
+		day    = 24 * hour
+		week   = 7 * day
+		month  = 30 * day  // approximate
+		year   = 365 * day // approximate
+	)
 
-    parts := make([]string, 0, 3)
-    rem := secs
+	parts := make([]string, 0, 3)
+	rem := secs
 
-    // Years
-    if rem >= year {
-        y := rem / year
-        rem %= year
-        parts = append(parts, fmt.Sprintf("%dy", y))
-        if len(parts) == 3 { return strings.Join(parts, " ") }
-    }
+	// Years
+	if rem >= year {
+		y := rem / year
+		rem %= year
+		parts = append(parts, fmt.Sprintf("%dy", y))
+		if len(parts) == 3 {
+			return strings.Join(parts, " ")
+		}
+	}
 
-    // Decide whether to use months: only if remaining days >= 60
-    // to avoid converting ~1 month into "1mo"; prefer days for ~30-59d.
-    // Compute remaining full days and sub-day remainder now to help week rules.
-    remDays := rem / day
-    subDay := rem % day
+	// Decide whether to use months: only if remaining days >= 60
+	// to avoid converting ~1 month into "1mo"; prefer days for ~30-59d.
+	// Compute remaining full days and sub-day remainder now to help week rules.
+	remDays := rem / day
+	subDay := rem % day
 
-    if remDays >= 60 {
-        mo := remDays / 30
-        remDays = remDays % 30
-        rem = remDays*day + subDay
-        if mo > 0 {
-            parts = append(parts, fmt.Sprintf("%dmo", mo))
-            if len(parts) == 3 { return strings.Join(parts, " ") }
-        }
-    }
+	if remDays >= 60 {
+		mo := remDays / 30
+		remDays = remDays % 30
+		rem = remDays*day + subDay
+		if mo > 0 {
+			parts = append(parts, fmt.Sprintf("%dmo", mo))
+			if len(parts) == 3 {
+				return strings.Join(parts, " ")
+			}
+		}
+	}
 
-    // Recompute remDays and subDay after potential month extraction
-    remDays = rem / day
-    subDay = rem % day
+	// Recompute remDays and subDay after potential month extraction
+	remDays = rem / day
+	subDay = rem % day
 
-    // Weeks: only if there is no sub-day remainder to keep days when hours/mins exist
-    if subDay == 0 && remDays >= 7 {
-        w := remDays / 7
-        remDays = remDays % 7
-        rem = remDays*day + subDay
-        if w > 0 {
-            parts = append(parts, fmt.Sprintf("%dw", w))
-            if len(parts) == 3 { return strings.Join(parts, " ") }
-        }
-    }
+	// Weeks: only if there is no sub-day remainder to keep days when hours/mins exist
+	if subDay == 0 && remDays >= 7 {
+		w := remDays / 7
+		remDays = remDays % 7
+		rem = remDays*day + subDay
+		if w > 0 {
+			parts = append(parts, fmt.Sprintf("%dw", w))
+			if len(parts) == 3 {
+				return strings.Join(parts, " ")
+			}
+		}
+	}
 
-    // Days
-    if rem >= day {
-        d := rem / day
-        rem %= day
-        parts = append(parts, fmt.Sprintf("%dd", d))
-        if len(parts) == 3 { return strings.Join(parts, " ") }
-    }
+	// Days
+	if rem >= day {
+		d := rem / day
+		rem %= day
+		parts = append(parts, fmt.Sprintf("%dd", d))
+		if len(parts) == 3 {
+			return strings.Join(parts, " ")
+		}
+	}
 
-    // Hours
-    if rem >= hour {
-        h := rem / hour
-        rem %= hour
-        parts = append(parts, fmt.Sprintf("%dh", h))
-        if len(parts) == 3 { return strings.Join(parts, " ") }
-    }
+	// Hours
+	if rem >= hour {
+		h := rem / hour
+		rem %= hour
+		parts = append(parts, fmt.Sprintf("%dh", h))
+		if len(parts) == 3 {
+			return strings.Join(parts, " ")
+		}
+	}
 
-    // Minutes
-    if rem >= minute {
-        m := rem / minute
-        rem %= minute
-        parts = append(parts, fmt.Sprintf("%dm", m))
-        if len(parts) == 3 { return strings.Join(parts, " ") }
-    }
+	// Minutes
+	if rem >= minute {
+		m := rem / minute
+		rem %= minute
+		parts = append(parts, fmt.Sprintf("%dm", m))
+		if len(parts) == 3 {
+			return strings.Join(parts, " ")
+		}
+	}
 
-    // Seconds
-    if rem > 0 && len(parts) < 3 {
-        parts = append(parts, fmt.Sprintf("%ds", rem))
-    }
+	// Seconds
+	if rem > 0 && len(parts) < 3 {
+		parts = append(parts, fmt.Sprintf("%ds", rem))
+	}
 
-    if len(parts) == 0 {
-        return "<1s"
-    }
-    return strings.Join(parts, " ")
+	if len(parts) == 0 {
+		return "<1s"
+	}
+	return strings.Join(parts, " ")
 }
 
 func main() {
@@ -237,6 +251,9 @@ func parseFlagsWithArgs(args []string) options {
 			}
 		}
 	}
+
+	// Set fixed idle timeout regardless of flags
+	opts.idleExitAfter = 5 * time.Minute
 
 	if strings.TrimSpace(opts.startPath) == "" {
 		return opts
@@ -412,17 +429,15 @@ func runInteractiveStream(opts options, client *vault.Client, matcher *regexp.Re
 		return formatValueRaw(val, true), nil
 	}
 
-
 	// Stream items into the UI
 	itemsCh := make(chan search.FoundItem, 256)
 	errCh := make(chan error, 1)
 
-	// Context to allow cancellation when UI exits
-	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+	// Context to allow cancellation when UI exits (no deadline for interactive session)
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		defer close(itemsCh)
 		defer close(errCh)
-		defer cancel()
 
 		// Helper to walk a single start path
 		walkOne := func(start string) error {
@@ -463,64 +478,162 @@ func runInteractiveStream(opts options, client *vault.Client, matcher *regexp.Re
 		errCh <- err
 	}()
 
-    // Build StatusProvider for the UI status bar
-    // Right: version, Middle: server, Left: token TTL (cached refresh)
-    addr := client.Address()
-    versionStr := fmt.Sprintf("fvf %s", version)
-    var (
-        lastTTL string
-        lastTTLAt time.Time
-    )
-    statusProvider := func() (string, string, string) {
-        // Refresh TTL at most every 10s to reduce API calls
-        if time.Since(lastTTLAt) > 10*time.Second {
-            ctxTTL, cancelTTL := context.WithTimeout(context.Background(), 3*time.Second)
-            defer cancelTTL()
-            if sec, err := client.Logical().ReadWithContext(ctxTTL, "auth/token/lookup-self"); err == nil && sec != nil {
-                // ttl may be number or string; convert to seconds and humanize
-                ttlSeconds := int64(-1)
-                if v, ok := sec.Data["ttl"]; ok {
-                    switch t := v.(type) {
-                    case json.Number:
-                        if s, e := t.Int64(); e == nil { ttlSeconds = s }
-                    case float64:
-                        ttlSeconds = int64(t)
-                    case int64:
-                        ttlSeconds = t
-                    case int:
-                        ttlSeconds = int64(t)
-                    case string:
-                        // If purely digits, parse as seconds. Else try time.ParseDuration.
-                        if t != "" && strings.IndexFunc(t, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
-                            if s, e := strconv.ParseInt(t, 10, 64); e == nil { ttlSeconds = s }
-                        } else if d, e := time.ParseDuration(t); e == nil {
-                            ttlSeconds = int64(d.Seconds())
-                        }
-                    }
-                }
-                if ttlSeconds >= 0 {
-                    lastTTL = "TTL: " + formatTTLHuman(ttlSeconds)
-                } else {
-                    lastTTL = "TTL: n/a"
-                }
-                lastTTLAt = time.Now()
-            } else {
-                lastTTL = "TTL: ?"
-                lastTTLAt = time.Now()
-            }
-        }
-        middle := addr
-        right := versionStr
-        return lastTTL, middle, right
-    }
+	lastActivity := time.Now()
 
-    // Start UI; preview enabled if -values or -json
-    uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, fetcher, statusProvider)
+	// Build StatusProvider for the UI status bar
+	// Right: version, Middle: server, Left: token TTL and Idle timer
+	addr := client.Address()
+	versionStr := fmt.Sprintf("fvf %s", version)
+	var (
+		lastTTLDisp string
+		lastTTLAt   time.Time
+	)
+	statusProvider := func() (string, string, string) {
+		// TTL refresh every 10s; UI redraws periodically so no keypress needed
+		if time.Since(lastTTLAt) > 10*time.Second {
+			ctxTTL, cancelTTL := context.WithTimeout(context.Background(), 2*time.Second)
+			if sec, err := client.Logical().ReadWithContext(ctxTTL, "auth/token/lookup-self"); err == nil && sec != nil {
+				ttlSeconds := int64(-1)
+				if v, ok := sec.Data["ttl"]; ok {
+					switch t := v.(type) {
+					case json.Number:
+						if s, e := t.Int64(); e == nil {
+							ttlSeconds = s
+						}
+						if s, e := t.Int64(); e == nil {
+							ttlSeconds = s
+						}
+					case float64:
+						ttlSeconds = int64(t)
+					case int64:
+						ttlSeconds = t
+					case int:
+						ttlSeconds = int64(t)
+					case string:
+						if t != "" && strings.IndexFunc(t, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+							if s, e := strconv.ParseInt(t, 10, 64); e == nil {
+								ttlSeconds = s
+							}
+						} else if d, e := time.ParseDuration(t); e == nil {
+							ttlSeconds = int64(d.Seconds())
+						}
+					}
+				}
+				if ttlSeconds <= 0 {
+					lastTTLDisp = "TTL: expired"
+				} else {
+					lastTTLDisp = "TTL: " + formatTTLHuman(ttlSeconds)
+				}
+			} else {
+				lastTTLDisp = "TTL: ?"
+			}
+			cancelTTL()
+			lastTTLAt = time.Now()
+		}
+		idle := time.Since(lastActivity)
+		// Cap displayed idle at the threshold; internal timer continues to grow
+		shown := idle
+		if shown > opts.idleExitAfter {
+			shown = opts.idleExitAfter
+		}
+		idleDisp := formatTTLHuman(int64(shown.Seconds())) + "/" + formatTTLHuman(int64(opts.idleExitAfter.Seconds()))
+		left := lastTTLDisp + " | Idle: " + idleDisp
+		middle := addr
+		right := versionStr
+		return left, middle, right
+	}
+
+	// Idle + token-expired auto-exit wiring
+	quitCh := make(chan struct{})
+	activityCh := make(chan struct{}, 1)
+	quitReasonCh := make(chan string, 1)
+
+	go func() {
+		for {
+			select {
+			case <-activityCh:
+				lastActivity = time.Now()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Monitor token TTL and idle time; when both conditions meet, signal quit
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		signaled := false
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Check TTL
+				expired := false
+				ttlSeconds := int64(-1)
+				ctxTTL, cancelTTL := context.WithTimeout(context.Background(), 3*time.Second)
+				if sec, err := client.Logical().ReadWithContext(ctxTTL, "auth/token/lookup-self"); err != nil || sec == nil {
+					// On error or nil response, assume expired/invalid token
+					expired = true
+				} else {
+					if v, ok := sec.Data["ttl"]; ok {
+						switch t := v.(type) {
+						case json.Number:
+							if s, e := t.Int64(); e == nil {
+								ttlSeconds = s
+							}
+						case float64:
+							ttlSeconds = int64(t)
+						case int64:
+							ttlSeconds = t
+						case int:
+							ttlSeconds = int64(t)
+						case string:
+							if t != "" && strings.IndexFunc(t, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+								if s, e := strconv.ParseInt(t, 10, 64); e == nil {
+									ttlSeconds = s
+								}
+							} else if d, e := time.ParseDuration(t); e == nil {
+								ttlSeconds = int64(d.Seconds())
+							}
+						}
+					}
+					if ttlSeconds <= 0 {
+						expired = true
+					}
+				}
+				cancelTTL()
+
+				if expired && time.Since(lastActivity) >= opts.idleExitAfter {
+					if !signaled {
+						// Signal quit and provide reason; the caller will print after UI teardown
+						msg := "fvf: Vault token expired and no activity — exiting"
+						select {
+						case quitReasonCh <- msg:
+						default:
+						}
+						close(quitCh)
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	// Start UI; preview enabled if -values or -json
+	uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, fetcher, statusProvider, quitCh, activityCh)
 	// Ensure we stop walking
 	cancel()
 	// Prefer UI error if any, else walker error (non-blocking read if goroutine still running)
 	if uiErr != nil {
 		return uiErr
+	}
+	// If monitor triggered an exit, print the message again after UI teardown so it's visible
+	select {
+	case msg := <-quitReasonCh:
+		printGreenHint(msg)
+	default:
 	}
 	select {
 	case e := <-errCh:
