@@ -4,8 +4,8 @@ on:
   push:
     branches:
       - "**"
-    paths:
-      - "**.go"
+    # paths:
+    #   - "**.go"
   pull_request:
 
 permissions:
