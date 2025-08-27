@@ -4,8 +4,8 @@ on:
   push:
     branches:
       - "**"
-    # paths:
-    #   - "**.go"
+    paths:
+      - "**.go"
   pull_request:
 
 permissions:
@@ -24,11 +24,6 @@ jobs:
 
       - name: Show Go version
         run: go version
-
-      - name: Install zip/unzip (if missing)
-        run: |
-          apt-get update
-          apt-get install -y zip unzip
 
       - name: Run tests
         run: go test ./...
