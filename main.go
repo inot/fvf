@@ -624,7 +624,7 @@ func runInteractiveStream(opts options, client *vault.Client, matcher *regexp.Re
 	}()
 
 	// Start UI; preview enabled if -values or -json
-	uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, fetcher, statusProvider, quitCh, activityCh)
+	uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, opts.jsonOut, fetcher, statusProvider, quitCh, activityCh)
 	// Ensure we stop walking
 	cancel()
 	// Prefer UI error if any, else walker error (non-blocking read if goroutine still running)

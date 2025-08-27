@@ -235,3 +235,5 @@ MIT
 - TTL formatting: humanized long durations (years/months/weeks/days/hours/minutes/seconds) with up to 3 components (e.g., `31d 23h 36m`).
 - TTL refresh: cached with periodic refresh (~10s) to avoid excessive API calls.
 - Auto-exit on idle + expired token: when the Vault token TTL reaches 0 and there is no user activity for 5 minutes, the TUI exits automatically.
+- Certificate preview: PEM-like values (certs/keys) are displayed as multi-line, indented blocks in `-values` preview for readability.
+- Table wrap: in wrap mode with `-values`, wrapped text aligns under the value column to preserve the table layout.
