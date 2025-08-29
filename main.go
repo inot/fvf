@@ -431,6 +431,37 @@ func runInteractiveStream(opts options, client *vault.Client, matcher *regexp.Re
 		return formatValueRaw(val, true), nil
 	}
 
+	// Policy fetcher for the UI
+	policyFetcher := func(p string) ([]string, error) {
+		// Use the fetchUserPolicies function we added to the ui package
+		policies, err := ui.FetchUserPolicies(client, p)
+		if err != nil {
+			return nil, err
+		}
+
+		// If no policies found, try to get default policies from the token
+		if len(policies) == 1 && policies[0] == "No policies found" {
+			token, err := client.Auth().Token().LookupSelf()
+			if err == nil && token != nil && token.Data != nil {
+				if policiesRaw, ok := token.Data["policies"]; ok {
+					if policyList, ok := policiesRaw.([]interface{}); ok {
+						result := make([]string, 0, len(policyList))
+						for _, p := range policyList {
+							if policy, ok := p.(string); ok {
+								result = append(result, policy)
+							}
+						}
+						if len(result) > 0 {
+							return result, nil
+						}
+					}
+				}
+			}
+		}
+
+		return policies, nil
+	}
+
 	// Stream items into the UI
 	itemsCh := make(chan search.FoundItem, 256)
 	errCh := make(chan error, 1)
@@ -624,7 +655,7 @@ func runInteractiveStream(opts options, client *vault.Client, matcher *regexp.Re
 	}()
 
 	// Start UI; preview enabled if -values or -json
-	uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, opts.jsonOut, fetcher, statusProvider, quitCh, activityCh)
+	uiErr := ui.RunStream(itemsCh, opts.printValues || opts.jsonOut, opts.jsonOut, fetcher, policyFetcher, statusProvider, quitCh, activityCh)
 	// Ensure we stop walking
 	cancel()
 	// Prefer UI error if any, else walker error (non-blocking read if goroutine still running)

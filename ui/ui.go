@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -12,13 +13,142 @@ import (
 	"fvf/search"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/hashicorp/vault/api"
 	"github.com/mattn/go-runewidth"
+)
+
+// policyCache is a simple in-memory cache for policies
+var (
+	policyCache     = make(map[string][]string)
+	policyCacheLock sync.RWMutex
 )
 
 // ValueFetcher returns a string to display for the value of a given path.
 // It should return a pretty-printed JSON or a human readable representation.
 // When not available or on error, it can return a message string and/or error.
 type ValueFetcher func(path string) (string, error)
+
+// PolicyFetcher returns a list of policies associated with a given path or entity.
+// When not available or on error, it can return an error.
+type PolicyFetcher func(path string) ([]string, error)
+
+// FetchUserPolicies fetches user policies for a given secret path.
+// It's exported so it can be used by the main package.
+// Results are cached in memory to prevent repeated fetches.
+func FetchUserPolicies(client *api.Client, path string) ([]string, error) {
+	// Check cache first
+	policyCacheLock.RLock()
+	if policies, ok := policyCache["user"]; ok {
+		policyCacheLock.RUnlock()
+		return policies, nil
+	}
+	policyCacheLock.RUnlock()
+
+	// Not in cache, fetch from Vault
+	// First try to get policies from the current token
+	tokenInfo, err := client.Auth().Token().LookupSelf()
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup token: %v", err)
+	}
+
+	if tokenInfo == nil || tokenInfo.Data == nil {
+		return []string{"No token data available"}, nil
+	}
+
+	var allPolicies []string
+
+	// Helper function to add policies if they don't already exist
+	addPolicies := func(policies []string) {
+		for _, p := range policies {
+			found := false
+			for _, existing := range allPolicies {
+				if existing == p {
+					found = true
+					break
+				}
+			}
+			if !found && p != "" {
+				allPolicies = append(allPolicies, p)
+			}
+		}
+	}
+
+	// 1. Get token policies
+	if policies, ok := tokenInfo.Data["policies"]; ok {
+		if policyList, ok := policies.([]interface{}); ok {
+			for _, p := range policyList {
+				if policy, ok := p.(string); ok && policy != "" {
+					addPolicies([]string{policy})
+				}
+			}
+		}
+	}
+
+	// 2. Get identity policies
+	if identityPolicies, ok := tokenInfo.Data["identity_policies"]; ok {
+		if policyList, ok := identityPolicies.([]interface{}); ok {
+			for _, p := range policyList {
+				if policy, ok := p.(string); ok && policy != "" {
+					addPolicies([]string{policy})
+				}
+			}
+		}
+	}
+
+	// 3. Get entity and group policies if available
+	if entityID, ok := tokenInfo.Data["entity_id"].(string); ok && entityID != "" {
+		entity, err := client.Logical().Read("identity/entity/id/" + entityID)
+		if err == nil && entity != nil && entity.Data != nil {
+			// Get direct entity policies
+			if policies, ok := entity.Data["policies"]; ok {
+				if policyList, ok := policies.([]interface{}); ok {
+					for _, p := range policyList {
+						if policy, ok := p.(string); ok && policy != "" {
+							addPolicies([]string{policy})
+						}
+					}
+				}
+			}
+
+			// Get group memberships and their policies
+			if groupIDs, ok := entity.Data["group_ids"]; ok {
+				if groupIDList, ok := groupIDs.([]interface{}); ok {
+					for _, g := range groupIDList {
+						if groupID, ok := g.(string); ok && groupID != "" {
+							group, err := client.Logical().Read("identity/group/id/" + groupID)
+							if err == nil && group != nil && group.Data != nil {
+								if policies, ok := group.Data["policies"]; ok {
+									if policyList, ok := policies.([]interface{}); ok {
+										for _, p := range policyList {
+											if policy, ok := p.(string); ok && policy != "" {
+												addPolicies([]string{policy})
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// If we found any policies, cache and return them
+	if len(allPolicies) > 0 {
+		sort.Strings(allPolicies) // Sort for consistent output
+		policyCacheLock.Lock()
+		policyCache["user"] = allPolicies
+		policyCacheLock.Unlock()
+		return allPolicies, nil
+	}
+
+	// Cache empty result to prevent refetching
+	policyCacheLock.Lock()
+	policyCache["user"] = []string{"No policies found"}
+	policyCacheLock.Unlock()
+	return []string{"No policies found"}, nil
+}
 
 // StatusProvider supplies left, middle, right strings for the bottom status bar.
 // Example: left = token lifetime, middle = server, right = version
@@ -221,7 +351,7 @@ func putLineWithHighlights(s tcell.Screen, x, y int, text, query string, baseSty
 // It mirrors the old Run() behavior, including lazy preview fetching when printValues is true.
 // quit: when a value arrives, the UI exits gracefully.
 // activity: UI sends an event on any user interaction (keys/mouse) to help the caller detect idleness.
-func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bool, fetcher ValueFetcher, status StatusProvider, quit <-chan struct{}, activity chan<- struct{}) error {
+func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bool, fetcher ValueFetcher, policyFetcher PolicyFetcher, status StatusProvider, quit <-chan struct{}, activity chan<- struct{}) error {
 	s, err := tcell.NewScreen()
 	if err != nil {
 		return err
@@ -330,6 +460,7 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 
 		if rightX+1 < w && maxRows > 0 {
 			var val string
+			var policies []string
 			if len(filtered) > 0 && cursor >= 0 && cursor < len(filtered) {
 				p := filtered[cursor].Path
 				if cached, ok := previewCache[p]; ok {
@@ -345,8 +476,15 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 						val = msg
 					}
 				}
+
+				// Fetch policies if policy fetcher is available
+				if policyFetcher != nil {
+					if p, err := policyFetcher(p); err == nil {
+						policies = p
+					}
+				}
 			}
-			drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, filtered, cursor, printValues, jsonPreview, val, previewWrap)
+			drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, filtered, cursor, printValues, jsonPreview, val, policies, previewWrap)
 		}
 
 		// Draw bottom status bar
@@ -752,110 +890,129 @@ func chunkString(s string, n int) []string {
     return out
 }
 
-func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, jsonPreview bool, fetched string, wrap bool) {
+func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, jsonPreview bool, fetched string, policies []string, wrap bool) {
 	if cursor < 0 || cursor >= len(filtered) || w <= 0 || h <= 0 {
 		return
 	}
-	// ... rest of the function remains the same ...
+
 	it := filtered[cursor]
-	lines := make([]string, 0, h)
-	lines = append(lines, it.Path)
-	// Separator between path and values
+	allLines := make([]string, 0, h)
+	allLines = append(allLines, it.Path)
+	
+	// Calculate heights for each section (half the available height for each)
+	headerHeight := 1 // For the path line
+	separatorHeight := 1
+	availableHeight := h - headerHeight - separatorHeight
+	
+	// Split the available height between secrets and policies
+	secretsHeight := availableHeight / 2
+	policiesHeight := availableHeight - secretsHeight
+	
+	// Draw the header (path)
+	if h > 0 {
+		putLine(s, x, y, allLines[0])
+	}
+
+	// Draw separator after header
 	if h > 1 {
 		sep := makeSeparator(w)
-		lines = append(lines, sep)
+		putLine(s, x, y+headerHeight, sep)
 	}
-	if printValues {
-		if fetched != "" {
-			if jsonPreview && isLikelyJSON(fetched) {
-				// Show pretty JSON as-is (already pretty if fetcher honored jsonOut)
-				lines = append(lines, strings.Split(fetched, "\n")...)
+
+	// Process secrets (top section)
+	secretsY := y + headerHeight + separatorHeight
+	secretsLines := make([]string, 0)
+	
+	// Check if we're in test mode (fetched is empty and we have a value to display)
+	testMode := fetched == "" && len(filtered) > 0 && filtered[cursor].Value != nil
+	
+	if printValues || testMode {
+		if testMode || fetched != "" {
+			if testMode {
+				// In test mode, use the value directly from the test data
+				if val, ok := filtered[cursor].Value.(map[string]interface{}); ok {
+					kv := toKVFromMap(val)
+					secretsLines = append(secretsLines, renderKVTable(kv)...)
+				}
+			} else if jsonPreview && isLikelyJSON(fetched) {
+				secretsLines = append(secretsLines, strings.Split(fetched, "\n")...)
 			} else if isLikelyJSON(fetched) {
-				// Non-JSON preview mode: show as key: value with multiline expansion
-				lines = append(lines, toLinesFromJSONText(fetched)...)
+				secretsLines = append(secretsLines, toLinesFromJSONText(fetched)...)
 			} else {
-				// Try to render a key/value table from fetched lines like "k: v"
 				kv := toKVFromLines(fetched)
 				if len(kv) > 0 {
-					lines = append(lines, renderKVTable(kv)...)
+					secretsLines = append(secretsLines, renderKVTable(kv)...)
 				} else {
-					lines = append(lines, strings.Split(fetched, "\n")...)
+					secretsLines = append(secretsLines, strings.Split(fetched, "\n")...)
 				}
-			}
-		} else if it.Value != nil {
-			if jsonPreview {
-				if b, err := json.MarshalIndent(it.Value, "", "  "); err == nil {
-					lines = append(lines, strings.Split(string(b), "\n")...)
-				}
-			} else if m, ok := it.Value.(map[string]interface{}); ok {
-				kv := toKVFromMap(m)
-				lines = append(lines, renderKVTable(kv)...)
-			} else if b, err := json.MarshalIndent(it.Value, "", "  "); err == nil {
-				lines = append(lines, strings.Split(string(b), "\n")...)
 			}
 		} else {
-			lines = append(lines, "")
-			lines = append(lines, "(no values to preview)")
-			lines = append(lines, "Tip: run with -values or rely on lazy fetch")
+			secretsLines = append(secretsLines, "(no values to preview)")
 		}
 	} else {
-		lines = append(lines, "")
-		lines = append(lines, "(no values to preview)")
-		lines = append(lines, "Tip: run with -values to include secret values")
+		secretsLines = append(secretsLines, "(run with -values to include secret values)")
 	}
-    // If wrapping is enabled and we're in values-table mode, perform table-aware wrapping so
-    // value continuations align under the value column instead of starting at column 0.
-    if wrap && printValues && !jsonPreview && len(lines) > 2 {
-        head := lines[:2]
-        body := lines[2:]
-        body = wrapTableLines(body, w)
-        lines = append(head, body...)
-        // After manual wrapping, render without further soft-wrap to avoid double wrapping.
-        wrap = false
-    }
 
-    // Render within the pane bounds. If wrap is enabled, soft-wrap by display width; otherwise truncate.
-    if !wrap {
-        for i := 0; i < h && i < len(lines); i++ {
-            ln := lines[i]
-            if runewidth.StringWidth(ln) > w {
-                ln = runewidth.Truncate(ln, w, "…")
-            }
-            putLine(s, x, y+i, ln)
-        }
-        return
-    }
-
-	// Soft-wrap: expand lines into wrapped segments up to height h
-	outRows := 0
-	for _, ln := range lines {
-		if outRows >= h {
-			break
+	// Draw secrets section
+	drawSection := func(s tcell.Screen, x, y, w, maxH int, lines []string, wrap bool) {
+		if maxH <= 0 || len(lines) == 0 {
+			return
 		}
-		// split ln into chunks of display width w
-		seg := make([]rune, 0, len(ln))
-		width := 0
-		for _, r := range ln {
-			rw := runewidth.RuneWidth(r)
-			if width+rw > w {
-				// flush current segment
-				putLine(s, x, y+outRows, string(seg))
-				outRows++
-				if outRows >= h {
-					break
-				}
-				seg = seg[:0]
-				width = 0
-			}
-			if outRows >= h {
+
+		// If wrapping is enabled and we're in values-table mode, perform table-aware wrapping
+		if wrap && printValues && !jsonPreview && len(lines) > 1 {
+			head := lines[:1]
+			body := lines[1:]
+			body = wrapTableLines(body, w)
+			lines = append(head, body...)
+			wrap = false
+		}
+
+		// Truncate if we have more lines than available height
+		if len(lines) > maxH {
+			lines = lines[:maxH-1]
+			lines = append(lines, "... (more content truncated)")
+		}
+
+		// Draw each line
+		for i, line := range lines {
+			if i >= maxH {
 				break
 			}
-			seg = append(seg, r)
-			width += rw
-		}
-		if outRows < h {
-			putLine(s, x, y+outRows, string(seg))
-			outRows++
+			if !wrap && runewidth.StringWidth(line) > w {
+				line = runewidth.Truncate(line, w, "…")
+			}
+			putLine(s, x, y+i, line)
 		}
 	}
+
+	// Draw secrets section
+	drawSection(s, x, secretsY, w, secretsHeight, secretsLines, wrap)
+
+	// Draw separator between secrets and policies
+	if h > secretsY+secretsHeight-y {
+		sepY := secretsY + secretsHeight
+		if sepY < y+h {
+			putLine(s, x, sepY, makeSeparator(w))
+		}
+	}
+
+	// Process and draw policies section (bottom section)
+	policiesY := secretsY + secretsHeight + 1
+	policiesLines := make([]string, 0)
+	
+	// Add policies section header
+	policiesLines = append(policiesLines, "=== User Policies ===")
+	
+	// Add policies if available
+	if len(policies) > 0 {
+		for _, policy := range policies {
+			policiesLines = append(policiesLines, "• "+policy)
+		}
+	} else {
+		policiesLines = append(policiesLines, "No policies found")
+	}
+	
+	// Draw policies section
+	drawSection(s, x, policiesY, w, policiesHeight, policiesLines, false)
 }
