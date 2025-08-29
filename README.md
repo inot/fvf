@@ -237,3 +237,6 @@ MIT
 - Auto-exit on idle + expired token: when the Vault token TTL reaches 0 and there is no user activity for 5 minutes, the TUI exits automatically.
 - Certificate preview: PEM-like values (certs/keys) are displayed as multi-line, indented blocks in `-values` preview for readability.
 - Table wrap: in wrap mode with `-values`, wrapped text aligns under the value column to preserve the table layout.
+- Added in-memory caching for user policies to reduce Vault API calls
+- Fixed UI test cases to match actual table rendering output
+- Improved table alignment and key-value formatting consistency
