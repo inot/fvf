@@ -359,6 +359,9 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 	if err := s.Init(); err != nil {
 		return err
 	}
+	// Enable mouse by default; user can toggle with 'm'
+	s.EnableMouse()
+	defer s.DisableMouse()
 	defer s.Fini()
 
 	finished := false
@@ -388,6 +391,7 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 	}
 
 	previewWrap := false
+	mouseEnabled := true
 
 	redraw := func() {
 		s.Clear()
@@ -400,7 +404,11 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 		if previewWrap {
 			wrapState = "on"
 		}
-		help := fmt.Sprintf("%d/%d  (Up/Down: move, Enter: select, Tab: wrap[%s], Esc: quit)", len(filtered), len(items), wrapState)
+		mouseState := "off"
+		if mouseEnabled {
+			mouseState = "on"
+		}
+		help := fmt.Sprintf("%d/%d  (Up/Down: move, Enter: select, Tab: wrap[%s], m: mouse[%s], Esc: quit)", len(filtered), len(items), wrapState, mouseState)
 		putLine(s, 0, 1, help)
 
 		contentTop := 2
@@ -623,6 +631,16 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 					previewWrap = !previewWrap
 					break
 				}
+				// Toggle mouse enablement
+				if r == 'm' || r == 'M' {
+					mouseEnabled = !mouseEnabled
+					if mouseEnabled {
+						s.EnableMouse()
+					} else {
+						s.DisableMouse()
+					}
+					break
+				}
 				if r != 0 {
 					query += string(r)
 					applyFilter()
@@ -639,11 +657,63 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 			s.Sync()
 			redraw()
 		case *tcell.EventMouse:
-			// ignore for now
+			// Mouse: wheel scroll; click to move cursor (Enter to select)
+			if !mouseEnabled {
+				break
+			}
+			mx, my := ev.Position()
+			btn := ev.Buttons()
+
 			if activity != nil {
 				select {
 				case activity <- struct{}{}:
 				default:
+				}
+			}
+
+			// Map click position to left list rows
+			w, h := s.Size()
+			contentTop := 2
+			maxRows := h - contentTop - 1
+			if maxRows < 1 {
+				break
+			}
+			leftW := w / 2
+			if leftW < 20 {
+				leftW = w - 30
+				if leftW < 10 {
+					leftW = w
+				}
+			}
+			if leftW > w {
+				leftW = w
+			}
+
+			// Wheel scroll
+			if btn&tcell.WheelUp != 0 {
+				if cursor > 0 {
+					cursor--
+				}
+				redraw()
+				break
+			}
+			if btn&tcell.WheelDown != 0 {
+				if cursor < len(filtered)-1 {
+					cursor++
+				}
+				redraw()
+				break
+			}
+
+			// Left click: move cursor only
+			if btn&tcell.Button1 != 0 {
+				if mx >= 0 && mx < leftW && my >= contentTop && my < contentTop+maxRows {
+					row := my - contentTop
+					newCursor := offset + row
+					if newCursor >= 0 && newCursor < len(filtered) {
+						cursor = newCursor
+						redraw()
+					}
 				}
 			}
 		}
