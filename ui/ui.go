@@ -542,7 +542,15 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 			} else if jsonPreview && isLikelyJSON(fetched) {
 				secretsLines = append(secretsLines, strings.Split(fetched, "\n")...)
 			} else if isLikelyJSON(fetched) {
-				secretsLines = append(secretsLines, toLinesFromJSONText(fetched)...)
+                // In table mode, render JSON object as a padded key-value table for alignment
+                var obj map[string]interface{}
+                if err := json.Unmarshal([]byte(fetched), &obj); err == nil {
+                    kv := toKVFromMap(obj)
+                    secretsLines = append(secretsLines, renderKVTable(kv)...)
+                } else {
+                    // Fallback to readable JSON lines
+                    secretsLines = append(secretsLines, toLinesFromJSONText(fetched)...)
+                }
 			} else {
 				kv := toKVFromLines(fetched)
 				if len(kv) > 0 {
