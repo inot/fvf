@@ -396,6 +396,9 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 	copyFlashUntil = time.Time{}
 	currentFetchedVal := ""
 
+	// Header toggle button [json]/[tbl]
+	toggleBtnX, toggleBtnY, toggleBtnW := -1, -1, 0
+
 	// quit signal handling: wake event loop when requested to exit
 	var shouldQuit atomic.Bool
 	if quit != nil {
@@ -436,23 +439,10 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 			return
 		}
 
-		leftW := w / 2
-		if leftW < 20 {
-			leftW = w - 30
-			if leftW < 10 {
-				leftW = w
-			}
-		}
-		if leftW > w {
-			leftW = w
-		}
+		leftW := computeLeftWidth(w)
 		rightX := leftW
 
-		if rightX < w && maxRows > 0 {
-			for y := 0; y < h; y++ {
-				s.SetContent(rightX, y, '│', nil, tcell.StyleDefault)
-			}
-		}
+		drawVerticalSeparator(s, rightX, h)
 
 		if cursor < offset {
 			offset = cursor
@@ -460,28 +450,7 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 		if cursor >= offset+maxRows {
 			offset = cursor - maxRows + 1
 		}
-		for i := 0; i < maxRows && i+offset < len(filtered); i++ {
-			it := filtered[i+offset]
-			line := it.Path
-			avail := leftW
-			if avail <= 0 {
-				avail = w
-			}
-			if runewidth.StringWidth(line) > avail {
-				line = runewidth.Truncate(line, avail, "…")
-			}
-			// Highlight query matches: base gray, matches white; selected line reversed
-			q := strings.TrimSpace(query)
-			if i+offset == cursor {
-				base := tcell.StyleDefault.Reverse(true)
-				match := base.Bold(true)
-				putLineWithHighlights(s, 0, contentTop+i, line, q, base, match)
-			} else {
-				base := tcell.StyleDefault.Foreground(tcell.ColorDarkGray)
-				match := tcell.StyleDefault.Foreground(tcell.ColorWhite)
-				putLineWithHighlights(s, 0, contentTop+i, line, q, base, match)
-			}
-		}
+		drawLeftList(s, contentTop, leftW, w, filtered, strings.TrimSpace(query), cursor, offset, maxRows)
 
 		if rightX+1 < w && maxRows > 0 {
 			var val string
@@ -574,34 +543,15 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 				}
 			}
 
-			// Draw header copy button on preview header (right pane) when values are shown
+			// Draw header buttons (right aligned)
 			if printValues {
 				headerX := rightX + 1
 				headerY := contentTop
-				baseLabel := "[copy]"
-				copiedLabel := "[OK]"
-				baseW := runewidth.StringWidth(baseLabel)
-				copiedW := runewidth.StringWidth(copiedLabel)
-				btnW := baseW
-				if copiedW > btnW {
-					btnW = copiedW
-				}
-				label := baseLabel
-				if !copyFlashUntil.IsZero() && time.Now().Before(copyFlashUntil) {
-					label = copiedLabel
-				}
-				if pad := btnW - runewidth.StringWidth(label); pad > 0 {
-					label = label + strings.Repeat(" ", pad)
-				}
 				paneW := w - headerX
-				bx := headerX + paneW - btnW
-				if bx < headerX {
-					bx = headerX
-				}
-				putLine(s, bx, headerY, label)
-				copyBtnX, copyBtnY, copyBtnW = bx, headerY, btnW
+				copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW = drawHeaderButtons(s, headerX, headerY, paneW, jsonPreview, copyFlashUntil)
 			} else {
 				copyBtnX, copyBtnY, copyBtnW = -1, -1, 0
+				toggleBtnX, toggleBtnY, toggleBtnW = -1, -1, 0
 			}
 		}
 
@@ -831,8 +781,14 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 				}
 			}
 
-			// Header full-secret copy button click
+			// Header buttons click
 			if btn&tcell.Button1 != 0 {
+				// Toggle view button
+				if toggleBtnW > 0 && my == toggleBtnY && mx >= toggleBtnX && mx < toggleBtnX+toggleBtnW {
+					jsonPreview = !jsonPreview
+					redraw()
+					break
+				}
 				if copyBtnW > 0 && my == copyBtnY && mx >= copyBtnX && mx < copyBtnX+copyBtnW {
 					if currentFetchedVal != "" {
 						_ = copyToClipboard(currentFetchedVal)
@@ -1167,7 +1123,16 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 			} else {
 				kv := toKVFromLines(fetched)
 				if len(kv) > 0 {
-					secretsLines = append(secretsLines, renderKVTable(kv)...)
+					if jsonPreview {
+						// Render KV as pretty JSON when jsonPreview is ON
+						if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
+							secretsLines = append(secretsLines, strings.Split(string(b), "\n")...)
+						} else {
+							secretsLines = append(secretsLines, renderKVTable(kv)...)
+						}
+					} else {
+						secretsLines = append(secretsLines, renderKVTable(kv)...)
+					}
 				} else {
 					secretsLines = append(secretsLines, strings.Split(fetched, "\n")...)
 				}
