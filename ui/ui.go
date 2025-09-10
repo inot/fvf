@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+	"os/exec"
 
 	"fvf/search"
 
@@ -379,6 +380,11 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 	previewCache := make(map[string]string)
 	previewErr := make(map[string]error)
 
+	// Per-secret copy buttons (drawn in redraw) and flash state keyed by secret key
+	type copyBtn struct{ X, Y, W int; Key, Val string }
+	var perLineCopyBtns []copyBtn
+	perKeyFlash := make(map[string]time.Time)
+
 	// quit signal handling: wake event loop when requested to exit
 	var shouldQuit atomic.Bool
 	if quit != nil {
@@ -493,6 +499,54 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 				}
 			}
 			drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, filtered, cursor, printValues, jsonPreview, val, policies, previewWrap)
+
+			// Draw per-secret copy buttons (right-aligned) when values are shown
+			perLineCopyBtns = perLineCopyBtns[:0]
+			if printValues {
+				kv := toKVFromLines(val)
+				if len(kv) > 0 {
+					// Recompute layout similar to drawPreview's top section
+					headerHeight := 1
+					separatorHeight := 1
+					availableHeight := maxRows - headerHeight - separatorHeight
+					if availableHeight < 0 { availableHeight = 0 }
+					secretsHeight := availableHeight / 2
+					secretsY := contentTop + headerHeight + separatorHeight
+
+					// Build table lines to know order
+					lines := renderKVTable(kv)
+					headerX := rightX + 1
+					paneW := w - headerX
+					baseLabel := "[cpy]"
+					copiedLabel := "[OK]"
+					baseW := runewidth.StringWidth(baseLabel)
+					copiedW := runewidth.StringWidth(copiedLabel)
+					btnW := baseW
+					if copiedW > btnW { btnW = copiedW }
+
+					for i, line := range lines {
+						if i >= secretsHeight { break }
+						parts := strings.SplitN(line, ": ", 2)
+						if len(parts) < 2 { continue }
+						key := strings.TrimSpace(parts[0])
+						valToCopy, ok := kv[key]
+						if !ok { continue }
+						bx := headerX + paneW - btnW
+						if bx < headerX { bx = headerX }
+						y := secretsY + i
+
+						lbl := baseLabel
+						if until, ok := perKeyFlash[key]; ok && time.Now().Before(until) {
+							lbl = copiedLabel
+						}
+						if pad := btnW - runewidth.StringWidth(lbl); pad > 0 {
+							lbl = lbl + strings.Repeat(" ", pad)
+						}
+						putLine(s, bx, y, lbl)
+						perLineCopyBtns = append(perLineCopyBtns, copyBtn{X: bx, Y: y, W: btnW, Key: key, Val: valToCopy})
+					}
+				}
+			}
 		}
 
 		// Draw bottom status bar
@@ -703,6 +757,23 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 				}
 				redraw()
 				break
+			}
+
+			// Per-secret copy buttons click (right pane)
+			if btn&tcell.Button1 != 0 {
+				for _, b := range perLineCopyBtns {
+					if my == b.Y && mx >= b.X && mx < b.X+b.W {
+						_ = copyToClipboard(b.Val)
+						perKeyFlash[b.Key] = time.Now().Add(1200 * time.Millisecond)
+						redraw()
+						// schedule a delayed redraw to clear the flash
+						go func() {
+							time.Sleep(1300 * time.Millisecond)
+							s.PostEvent(tcell.NewEventInterrupt(nil))
+						}()
+						break
+					}
+				}
 			}
 
 			// Left click: move cursor only
@@ -958,6 +1029,13 @@ func chunkString(s string, n int) []string {
         out = append(out, s[i:end])
     }
     return out
+}
+
+// copyToClipboard copies text to the macOS clipboard using pbcopy.
+func copyToClipboard(text string) error {
+    cmd := exec.Command("pbcopy")
+    cmd.Stdin = strings.NewReader(text)
+    return cmd.Run()
 }
 
 func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, jsonPreview bool, fetched string, policies []string, wrap bool) {
