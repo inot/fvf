@@ -702,8 +702,9 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
                     b, _ := json.Marshal(it.Value)
                     out = string(b)
                 }
-                // If JSON preview mode is active, ensure we print JSON
+                // Match printed output to current preview mode
                 if jsonPreview {
+                    // Ensure JSON output when in JSON mode
                     if isLikelyJSON(out) {
                         // keep as-is
                     } else {
@@ -713,6 +714,12 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
                                 out = string(b)
                             }
                         }
+                    }
+                } else {
+                    // Ensure table-style output when in table mode
+                    if isLikelyJSON(out) {
+                        lines := toLinesFromJSONText(out)
+                        out = strings.Join(lines, "\n")
                     }
                 }
                 if out == "" {
