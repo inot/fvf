@@ -3,13 +3,13 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
-	"os/exec"
 
 	"fvf/search"
 
@@ -167,60 +167,60 @@ func putLine(s tcell.Screen, x, y int, text string) {
 // wrapTableLines wraps table-formatted lines like "<key-padded>: <value>" so that wrapped
 // segments are indented to align under the value column. Lines without ": " are returned as-is.
 func wrapTableLines(lines []string, w int) []string {
-    out := make([]string, 0, len(lines))
-    for _, ln := range lines {
-        // Find the first occurrence of ": " which separates key and value
-        idx := strings.Index(ln, ": ")
-        if idx <= 0 {
-            // Not a table line; leave as-is (will be truncated by caller if needed)
-            out = append(out, ln)
-            continue
-        }
-        padWidth := idx + 2 // include ": "
-        keyPrefix := ln[:padWidth]
-        val := ln[padWidth:]
-        // Available width for value per line
-        avail := w - runewidth.StringWidth(keyPrefix)
-        if avail <= 0 {
-            // No room; fall back to truncation of whole line by caller
-            out = append(out, ln)
-            continue
-        }
-        // Reflow value into chunks that fit within avail display columns
-        cur := make([]rune, 0, len(val))
-        curW := 0
-        first := true
-        flush := func() {
-            if len(cur) == 0 {
-                // still output empty segment to keep structure
-                if first {
-                    out = append(out, keyPrefix)
-                } else {
-                    out = append(out, strings.Repeat(" ", padWidth))
-                }
-                return
-            }
-            seg := string(cur)
-            if first {
-                out = append(out, keyPrefix+seg)
-                first = false
-            } else {
-                out = append(out, strings.Repeat(" ", padWidth)+seg)
-            }
-            cur = cur[:0]
-            curW = 0
-        }
-        for _, r := range val {
-            rw := runewidth.RuneWidth(r)
-            if curW+rw > avail {
-                flush()
-            }
-            cur = append(cur, r)
-            curW += rw
-        }
-        flush()
-    }
-    return out
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		// Find the first occurrence of ": " which separates key and value
+		idx := strings.Index(ln, ": ")
+		if idx <= 0 {
+			// Not a table line; leave as-is (will be truncated by caller if needed)
+			out = append(out, ln)
+			continue
+		}
+		padWidth := idx + 2 // include ": "
+		keyPrefix := ln[:padWidth]
+		val := ln[padWidth:]
+		// Available width for value per line
+		avail := w - runewidth.StringWidth(keyPrefix)
+		if avail <= 0 {
+			// No room; fall back to truncation of whole line by caller
+			out = append(out, ln)
+			continue
+		}
+		// Reflow value into chunks that fit within avail display columns
+		cur := make([]rune, 0, len(val))
+		curW := 0
+		first := true
+		flush := func() {
+			if len(cur) == 0 {
+				// still output empty segment to keep structure
+				if first {
+					out = append(out, keyPrefix)
+				} else {
+					out = append(out, strings.Repeat(" ", padWidth))
+				}
+				return
+			}
+			seg := string(cur)
+			if first {
+				out = append(out, keyPrefix+seg)
+				first = false
+			} else {
+				out = append(out, strings.Repeat(" ", padWidth)+seg)
+			}
+			cur = cur[:0]
+			curW = 0
+		}
+		for _, r := range val {
+			rw := runewidth.RuneWidth(r)
+			if curW+rw > avail {
+				flush()
+			}
+			cur = append(cur, r)
+			curW += rw
+		}
+		flush()
+	}
+	return out
 }
 
 // drawStatusBar renders a status bar on a single line with left, middle, and right aligned segments.
@@ -381,9 +381,20 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 	previewErr := make(map[string]error)
 
 	// Per-secret copy buttons (drawn in redraw) and flash state keyed by secret key
-	type copyBtn struct{ X, Y, W int; Key, Val string }
+	type copyBtn struct {
+		X, Y, W  int
+		Key, Val string
+	}
 	var perLineCopyBtns []copyBtn
 	perKeyFlash := make(map[string]time.Time)
+
+	// Per-secret copy buttons (drawn in redraw) and flash state keyed by secret key
+
+	// Header full-secret copy button state
+	copyBtnX, copyBtnY, copyBtnW := -1, -1, 0
+	var copyFlashUntil time.Time
+	copyFlashUntil = time.Time{}
+	currentFetchedVal := ""
 
 	// quit signal handling: wake event loop when requested to exit
 	var shouldQuit atomic.Bool
@@ -500,6 +511,9 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 			}
 			drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, filtered, cursor, printValues, jsonPreview, val, policies, previewWrap)
 
+			// Remember current fetched value for header copy button
+			currentFetchedVal = val
+
 			// Draw per-secret copy buttons (right-aligned) when values are shown
 			perLineCopyBtns = perLineCopyBtns[:0]
 			if printValues {
@@ -509,7 +523,9 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 					headerHeight := 1
 					separatorHeight := 1
 					availableHeight := maxRows - headerHeight - separatorHeight
-					if availableHeight < 0 { availableHeight = 0 }
+					if availableHeight < 0 {
+						availableHeight = 0
+					}
 					secretsHeight := availableHeight / 2
 					secretsY := contentTop + headerHeight + separatorHeight
 
@@ -517,22 +533,32 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 					lines := renderKVTable(kv)
 					headerX := rightX + 1
 					paneW := w - headerX
-					baseLabel := "[cpy]"
+					baseLabel := "[copy]"
 					copiedLabel := "[OK]"
 					baseW := runewidth.StringWidth(baseLabel)
 					copiedW := runewidth.StringWidth(copiedLabel)
 					btnW := baseW
-					if copiedW > btnW { btnW = copiedW }
+					if copiedW > btnW {
+						btnW = copiedW
+					}
 
 					for i, line := range lines {
-						if i >= secretsHeight { break }
+						if i >= secretsHeight {
+							break
+						}
 						parts := strings.SplitN(line, ": ", 2)
-						if len(parts) < 2 { continue }
+						if len(parts) < 2 {
+							continue
+						}
 						key := strings.TrimSpace(parts[0])
 						valToCopy, ok := kv[key]
-						if !ok { continue }
+						if !ok {
+							continue
+						}
 						bx := headerX + paneW - btnW
-						if bx < headerX { bx = headerX }
+						if bx < headerX {
+							bx = headerX
+						}
 						y := secretsY + i
 
 						lbl := baseLabel
@@ -547,6 +573,36 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 					}
 				}
 			}
+
+			// Draw header copy button on preview header (right pane) when values are shown
+			if printValues {
+				headerX := rightX + 1
+				headerY := contentTop
+				baseLabel := "[copy]"
+				copiedLabel := "[OK]"
+				baseW := runewidth.StringWidth(baseLabel)
+				copiedW := runewidth.StringWidth(copiedLabel)
+				btnW := baseW
+				if copiedW > btnW {
+					btnW = copiedW
+				}
+				label := baseLabel
+				if !copyFlashUntil.IsZero() && time.Now().Before(copyFlashUntil) {
+					label = copiedLabel
+				}
+				if pad := btnW - runewidth.StringWidth(label); pad > 0 {
+					label = label + strings.Repeat(" ", pad)
+				}
+				paneW := w - headerX
+				bx := headerX + paneW - btnW
+				if bx < headerX {
+					bx = headerX
+				}
+				putLine(s, bx, headerY, label)
+				copyBtnX, copyBtnY, copyBtnW = bx, headerY, btnW
+			} else {
+				copyBtnX, copyBtnY, copyBtnW = -1, -1, 0
+			}
 		}
 
 		// Draw bottom status bar
@@ -554,7 +610,6 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 
 		s.Show()
 	}
-
 	applyFilter := func() {
 		q := strings.ToLower(strings.TrimSpace(query))
 		if q == "" {
@@ -776,6 +831,22 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 				}
 			}
 
+			// Header full-secret copy button click
+			if btn&tcell.Button1 != 0 {
+				if copyBtnW > 0 && my == copyBtnY && mx >= copyBtnX && mx < copyBtnX+copyBtnW {
+					if currentFetchedVal != "" {
+						_ = copyToClipboard(currentFetchedVal)
+						copyFlashUntil = time.Now().Add(1200 * time.Millisecond)
+						redraw()
+						go func() {
+							time.Sleep(1300 * time.Millisecond)
+							s.PostEvent(tcell.NewEventInterrupt(nil))
+						}()
+						break
+					}
+				}
+			}
+
 			// Left click: move cursor only
 			if btn&tcell.Button1 != 0 {
 				if mx >= 0 && mx < leftW && my >= contentTop && my < contentTop+maxRows {
@@ -804,10 +875,10 @@ func isLikelyJSON(s string) bool {
 }
 
 // toLinesFromJSONText tries to present JSON text with readable multi-line strings.
-// - If JSON is an object: render key: value; for string values, expand \n into actual new lines
-//   and indent continuation lines to align after "key: ".
-// - If JSON is a string: expand escapes and split into lines.
-// - Otherwise: pretty-print and split by newlines.
+//   - If JSON is an object: render key: value; for string values, expand \n into actual new lines
+//     and indent continuation lines to align after "key: ".
+//   - If JSON is a string: expand escapes and split into lines.
+//   - Otherwise: pretty-print and split by newlines.
 func toLinesFromJSONText(s string) []string {
 	var v interface{}
 	if err := json.Unmarshal([]byte(s), &v); err != nil {
@@ -818,7 +889,9 @@ func toLinesFromJSONText(s string) []string {
 	case map[string]interface{}:
 		// Stable order
 		keys := make([]string, 0, len(t))
-		for k := range t { keys = append(keys, k) }
+		for k := range t {
+			keys = append(keys, k)
+		}
 		sort.Strings(keys)
 		lines := make([]string, 0, len(keys))
 		for _, k := range keys {
@@ -840,7 +913,9 @@ func toLinesFromJSONText(s string) []string {
 			default:
 				// marshal compact for non-strings
 				b, err := json.Marshal(val)
-				if err != nil { b = []byte(fmt.Sprintf("%v", val)) }
+				if err != nil {
+					b = []byte(fmt.Sprintf("%v", val))
+				}
 				lines = append(lines, fmt.Sprintf("%s: %s", k, string(b)))
 			}
 		}
@@ -849,7 +924,9 @@ func toLinesFromJSONText(s string) []string {
 		return strings.Split(t, "\n")
 	default:
 		b, err := json.MarshalIndent(t, "", "  ")
-		if err != nil { return strings.Split(s, "\n") }
+		if err != nil {
+			return strings.Split(s, "\n")
+		}
 		return strings.Split(string(b), "\n")
 	}
 }
@@ -903,139 +980,140 @@ func toKVFromMap(m map[string]interface{}) map[string]string {
 }
 
 func renderKVTable(kv map[string]string) []string {
-    // Stable lexical order of keys for deterministic table view
-    keys := make([]string, 0, len(kv))
-    for k := range kv {
-        keys = append(keys, k)
-    }
-    sort.Strings(keys)
+	// Stable lexical order of keys for deterministic table view
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 
-    maxK := 0
-    for _, k := range keys {
-        if len(k) > maxK {
-            maxK = len(k)
-        }
-    }
+	maxK := 0
+	for _, k := range keys {
+		if len(k) > maxK {
+			maxK = len(k)
+		}
+	}
 
-    lines := make([]string, 0, len(keys))
-    for _, k := range keys {
-        v := kv[k]
-        // If value looks like a PEM/certificate or a very long base64 blob, split nicely with indentation
-        pemLines := splitPEMish(v)
-        if len(pemLines) > 1 {
-            // First line with key and first pem line
-            lines = append(lines, fmt.Sprintf("%-*s: %s", maxK, k, pemLines[0]))
-            // Continuation lines aligned after "key: "
-            pad := strings.Repeat(" ", maxK+2)
-            for i := 1; i < len(pemLines); i++ {
-                lines = append(lines, pad+pemLines[i])
-            }
-            continue
-        }
-        // Generic multi-line support even if not PEM/base64
-        if strings.Contains(v, "\n") {
-            parts := strings.Split(v, "\n")
-            lines = append(lines, fmt.Sprintf("%-*s: %s", maxK, k, parts[0]))
-            pad := strings.Repeat(" ", maxK+2)
-            for i := 1; i < len(parts); i++ {
-                lines = append(lines, pad+parts[i])
-            }
-            continue
-        }
-        line := fmt.Sprintf("%-*s: %s", maxK, k, v)
-        lines = append(lines, line)
-    }
-    return lines
+	lines := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := kv[k]
+		// If value looks like a PEM/certificate or a very long base64 blob, split nicely with indentation
+		pemLines := splitPEMish(v)
+		if len(pemLines) > 1 {
+			// First line with key and first pem line
+			lines = append(lines, fmt.Sprintf("%-*s: %s", maxK, k, pemLines[0]))
+			// Continuation lines aligned after "key: "
+			pad := strings.Repeat(" ", maxK+2)
+			for i := 1; i < len(pemLines); i++ {
+				lines = append(lines, pad+pemLines[i])
+			}
+			continue
+		}
+		// Generic multi-line support even if not PEM/base64
+		if strings.Contains(v, "\n") {
+			parts := strings.Split(v, "\n")
+			lines = append(lines, fmt.Sprintf("%-*s: %s", maxK, k, parts[0]))
+			pad := strings.Repeat(" ", maxK+2)
+			for i := 1; i < len(parts); i++ {
+				lines = append(lines, pad+parts[i])
+			}
+			continue
+		}
+		line := fmt.Sprintf("%-*s: %s", maxK, k, v)
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // splitPEMish splits certificate/PEM-like strings or long base64 blobs into readable lines.
 // Rules:
-// - If input contains PEM headers (-----BEGIN ...----- / -----END ...-----), preserve headers
-//   and split the base64 body into 64-char lines.
-// - Else, if input is a single long base64-ish string (> 100 chars, only base64 charset),
-//   chunk into 64-char lines.
+//   - If input contains PEM headers (-----BEGIN ...----- / -----END ...-----), preserve headers
+//     and split the base64 body into 64-char lines.
+//   - Else, if input is a single long base64-ish string (> 100 chars, only base64 charset),
+//     chunk into 64-char lines.
+//
 // Returns a slice of lines; len==1 means no special handling applied.
 func splitPEMish(s string) []string {
-    if s == "" {
-        return []string{""}
-    }
-    // Quick path: if already has newlines and looks like PEM, normalize line lengths but keep structure
-    if strings.Contains(s, "-----BEGIN ") && strings.Contains(s, "-----END ") {
-        // Extract header, body, footer
-        lines := strings.Split(s, "\n")
-        hdrIdx, ftrIdx := -1, -1
-        for i, ln := range lines {
-            if strings.HasPrefix(strings.TrimSpace(ln), "-----BEGIN ") {
-                hdrIdx = i
-            }
-            if strings.HasPrefix(strings.TrimSpace(ln), "-----END ") {
-                ftrIdx = i
-            }
-        }
-        if hdrIdx != -1 && ftrIdx != -1 && ftrIdx >= hdrIdx {
-            hdr := strings.TrimSpace(lines[hdrIdx])
-            ftr := strings.TrimSpace(lines[ftrIdx])
-            // Concatenate body (strip spaces)
-            body := strings.Join(lines[hdrIdx+1:ftrIdx], "")
-            body = compactBase64(body)
-            chunks := chunkString(body, 64)
-            out := make([]string, 0, 2+len(chunks))
-            out = append(out, hdr)
-            out = append(out, chunks...)
-            out = append(out, ftr)
-            return out
-        }
-    }
-    // No explicit headers: treat as base64-ish if long enough and charset matches
-    compact := compactBase64(s)
-    if len(compact) >= 100 && isBase64Charset(compact) {
-        return chunkString(compact, 64)
-    }
-    return []string{s}
+	if s == "" {
+		return []string{""}
+	}
+	// Quick path: if already has newlines and looks like PEM, normalize line lengths but keep structure
+	if strings.Contains(s, "-----BEGIN ") && strings.Contains(s, "-----END ") {
+		// Extract header, body, footer
+		lines := strings.Split(s, "\n")
+		hdrIdx, ftrIdx := -1, -1
+		for i, ln := range lines {
+			if strings.HasPrefix(strings.TrimSpace(ln), "-----BEGIN ") {
+				hdrIdx = i
+			}
+			if strings.HasPrefix(strings.TrimSpace(ln), "-----END ") {
+				ftrIdx = i
+			}
+		}
+		if hdrIdx != -1 && ftrIdx != -1 && ftrIdx >= hdrIdx {
+			hdr := strings.TrimSpace(lines[hdrIdx])
+			ftr := strings.TrimSpace(lines[ftrIdx])
+			// Concatenate body (strip spaces)
+			body := strings.Join(lines[hdrIdx+1:ftrIdx], "")
+			body = compactBase64(body)
+			chunks := chunkString(body, 64)
+			out := make([]string, 0, 2+len(chunks))
+			out = append(out, hdr)
+			out = append(out, chunks...)
+			out = append(out, ftr)
+			return out
+		}
+	}
+	// No explicit headers: treat as base64-ish if long enough and charset matches
+	compact := compactBase64(s)
+	if len(compact) >= 100 && isBase64Charset(compact) {
+		return chunkString(compact, 64)
+	}
+	return []string{s}
 }
 
 func isBase64Charset(s string) bool {
-    for _, r := range s {
-        if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=' {
-            continue
-        }
-        return false
-    }
-    return true
+	for _, r := range s {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func compactBase64(s string) string {
-    // Remove whitespace
-    b := make([]rune, 0, len(s))
-    for _, r := range s {
-        if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-            continue
-        }
-        b = append(b, r)
-    }
-    return string(b)
+	// Remove whitespace
+	b := make([]rune, 0, len(s))
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			continue
+		}
+		b = append(b, r)
+	}
+	return string(b)
 }
 
 func chunkString(s string, n int) []string {
-    if n <= 0 || len(s) <= n {
-        return []string{s}
-    }
-    out := make([]string, 0, (len(s)+n-1)/n)
-    for i := 0; i < len(s); i += n {
-        end := i + n
-        if end > len(s) {
-            end = len(s)
-        }
-        out = append(out, s[i:end])
-    }
-    return out
+	if n <= 0 || len(s) <= n {
+		return []string{s}
+	}
+	out := make([]string, 0, (len(s)+n-1)/n)
+	for i := 0; i < len(s); i += n {
+		end := i + n
+		if end > len(s) {
+			end = len(s)
+		}
+		out = append(out, s[i:end])
+	}
+	return out
 }
 
 // copyToClipboard copies text to the macOS clipboard using pbcopy.
 func copyToClipboard(text string) error {
-    cmd := exec.Command("pbcopy")
-    cmd.Stdin = strings.NewReader(text)
-    return cmd.Run()
+	cmd := exec.Command("pbcopy")
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }
 
 func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, jsonPreview bool, fetched string, policies []string, wrap bool) {
@@ -1046,16 +1124,16 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 	it := filtered[cursor]
 	allLines := make([]string, 0, h)
 	allLines = append(allLines, it.Path)
-	
+
 	// Calculate heights for each section (half the available height for each)
 	headerHeight := 1 // For the path line
 	separatorHeight := 1
 	availableHeight := h - headerHeight - separatorHeight
-	
+
 	// Split the available height between secrets and policies
 	secretsHeight := availableHeight / 2
 	policiesHeight := availableHeight - secretsHeight
-	
+
 	// Draw the header (path)
 	if h > 0 {
 		putLine(s, x, y, allLines[0])
@@ -1070,10 +1148,10 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 	// Process secrets (top section)
 	secretsY := y + headerHeight + separatorHeight
 	secretsLines := make([]string, 0)
-	
+
 	// Check if we're in test mode (fetched is empty and we have a value to display)
 	testMode := fetched == "" && len(filtered) > 0 && filtered[cursor].Value != nil
-	
+
 	if printValues || testMode {
 		if testMode || fetched != "" {
 			if testMode {
@@ -1148,10 +1226,10 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 	// Process and draw policies section (bottom section)
 	policiesY := secretsY + secretsHeight + 1
 	policiesLines := make([]string, 0)
-	
+
 	// Add policies section header
 	policiesLines = append(policiesLines, "=== User Policies ===")
-	
+
 	// Add policies if available
 	if len(policies) > 0 {
 		for _, policy := range policies {
@@ -1160,7 +1238,7 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 	} else {
 		policiesLines = append(policiesLines, "No policies found")
 	}
-	
+
 	// Draw policies section
 	drawSection(s, x, policiesY, w, policiesHeight, policiesLines, false)
 }
