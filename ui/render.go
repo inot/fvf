@@ -95,7 +95,17 @@ func RenderAll(
 		// Draw per-secret copy buttons (right-aligned) when values are shown
 		uiState.PerLineCopyBtns = uiState.PerLineCopyBtns[:0]
 		if printValues {
-			kv := toKVFromLines(val)
+			var kv map[string]string
+			if uiState.JSONPreview && isLikelyJSON(val) {
+				// Parse JSON into a map for key->value mapping
+				var m map[string]interface{}
+				if err := json.Unmarshal([]byte(val), &m); err == nil {
+					kv = toKVFromMap(m)
+				}
+			}
+			if kv == nil {
+				kv = toKVFromLines(val)
+			}
 			if len(kv) > 0 {
 				// If JSON preview is active, ensure header copy uses JSON text
 				if uiState.JSONPreview {
@@ -123,11 +133,15 @@ func RenderAll(
 				paneW := w - headerX
 				var visualLines []string
 				if uiState.JSONPreview {
-					// When JSON preview is active, secrets are rendered as JSON text
+					// When JSON preview is active, render as pretty JSON to have one key per line
 					if isLikelyJSON(val) {
-						visualLines = strings.Split(val, "\n")
+						if b, err := json.MarshalIndent(json.RawMessage(val), "", "  "); err == nil {
+							visualLines = strings.Split(string(b), "\n")
+						} else {
+							visualLines = strings.Split(val, "\n")
+						}
 					} else {
-						// We render KV as pretty JSON when jsonPreview is ON in drawPreview
+						// Render KV as pretty JSON when jsonPreview is ON
 						if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
 							visualLines = strings.Split(string(b), "\n")
 						}
