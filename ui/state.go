@@ -2,6 +2,8 @@ package ui
 
 import (
 	"time"
+	"sort"
+	"strings"
 	"fvf/search"
 )
 
@@ -39,6 +41,31 @@ type UIState struct {
 	JSONPreview  bool
 }
 
+// ApplyFilter filters Items into Filtered based on Query and normalizes Cursor/Offset.
+func (st *UIState) ApplyFilter() {
+    q := st.Query
+    if q == "" {
+        st.Filtered = append(st.Filtered[:0], st.Items...)
+    } else {
+        lq := strings.ToLower(strings.TrimSpace(q))
+        st.Filtered = st.Filtered[:0]
+        for _, it := range st.Items {
+            if strings.Contains(strings.ToLower(it.Path), lq) {
+                st.Filtered = append(st.Filtered, it)
+            }
+        }
+    }
+    // Sort filtered list by path for stable order
+    sort.Slice(st.Filtered, func(i, j int) bool { return st.Filtered[i].Path < st.Filtered[j].Path })
+
+    if st.Cursor >= len(st.Filtered) {
+        st.Cursor = len(st.Filtered) - 1
+    }
+    if st.Cursor < 0 {
+        st.Cursor = 0
+    }
+    st.Offset = 0
+}
 // ButtonBounds represents a clickable rectangular region.
 type ButtonBounds struct {
 	X int

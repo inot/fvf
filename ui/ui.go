@@ -376,17 +376,13 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
         }
     }()
 
-    items := make([]search.FoundItem, 0, 1024)
-    query := ""
-    filtered := make([]search.FoundItem, 0, 1024)
-    cursor := 0
-    offset := 0
-    previewCache := make(map[string]string)
-
-    // Initialize consolidated UI state (partial adoption in this step)
+    // Initialize consolidated UI state
     uiState := &UIState{
         Items:         make([]search.FoundItem, 0, 1024),
         Filtered:      make([]search.FoundItem, 0, 1024),
+        Query:         "",
+        Cursor:        0,
+        Offset:        0,
         PreviewCache:  make(map[string]string),
         PreviewErr:    make(map[string]error),
         PerKeyFlash:   make(map[string]time.Time),
@@ -424,13 +420,6 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
     }
 
     redraw := func() {
-        // Sync locals into UIState before rendering
-        uiState.Items = items
-        uiState.Filtered = filtered
-        uiState.Query = query
-        uiState.Cursor = cursor
-        uiState.Offset = offset
-
         copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW = RenderAll(
             s,
             printValues,
@@ -441,43 +430,23 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
         )
     }
 
-    applyFilter := func() {
-        q := strings.ToLower(strings.TrimSpace(query))
-        if q == "" {
-            filtered = append(filtered[:0], items...)
-        } else {
-            filtered = filtered[:0]
-            for _, it := range items {
-                if strings.Contains(strings.ToLower(it.Path), q) {
-                    filtered = append(filtered, it)
-                }
-            }
-            sort.Slice(filtered, func(i, j int) bool { return filtered[i].Path < filtered[j].Path })
-        }
-        if cursor >= len(filtered) {
-            cursor = len(filtered) - 1
-        }
-        if cursor < 0 {
-            cursor = 0
-        }
-        offset = 0
-    }
+    applyFilter := func() { uiState.ApplyFilter() }
 
     // receive items and trigger redraws
     go func() {
         for it := range itemsCh {
-            items = append(items, it)
-            q := strings.ToLower(strings.TrimSpace(query))
+            uiState.Items = append(uiState.Items, it)
+            q := strings.ToLower(strings.TrimSpace(uiState.Query))
             if q == "" || strings.Contains(strings.ToLower(it.Path), q) {
-                filtered = append(filtered, it)
-                sort.Slice(filtered, func(i, j int) bool { return filtered[i].Path < filtered[j].Path })
+                uiState.Filtered = append(uiState.Filtered, it)
+                sort.Slice(uiState.Filtered, func(i, j int) bool { return uiState.Filtered[i].Path < uiState.Filtered[j].Path })
             }
             s.PostEvent(tcell.NewEventInterrupt(nil))
         }
         s.PostEvent(tcell.NewEventInterrupt(nil))
     }()
 
-    applyFilter()
+    uiState.ApplyFilter()
     redraw()
 
     // Periodic status bar refresh without user input
@@ -503,7 +472,7 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
         case *tcell.EventInterrupt:
             redraw()
         case *tcell.EventKey:
-            shouldRedraw, shouldQuit := HandleKey(s, ev, &items, &filtered, &query, &cursor, &offset, previewCache, fetcher, uiState, applyFilter, activity)
+            shouldRedraw, shouldQuit := HandleKey(s, ev, &uiState.Items, &uiState.Filtered, &uiState.Query, &uiState.Cursor, &uiState.Offset, uiState.PreviewCache, fetcher, uiState, applyFilter, activity)
             if shouldQuit {
                 return nil
             }
@@ -514,7 +483,7 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
             s.Sync()
             redraw()
         case *tcell.EventMouse:
-            shouldRedraw := HandleMouse(s, ev, &filtered, &cursor, &offset, uiState, copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW, activity)
+            shouldRedraw := HandleMouse(s, ev, &uiState.Filtered, &uiState.Cursor, &uiState.Offset, uiState, copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW, activity)
             if shouldRedraw {
                 redraw()
             }
