@@ -488,6 +488,16 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 			if printValues {
 				kv := toKVFromLines(val)
 				if len(kv) > 0 {
+					// If JSON preview is active, ensure header copy uses JSON text
+					if jsonPreview {
+						if isLikelyJSON(val) {
+							currentFetchedVal = val
+						} else {
+							if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
+								currentFetchedVal = string(b)
+							}
+						}
+					}
 					// Recompute layout similar to drawPreview's top section
 					headerHeight := 1
 					separatorHeight := 1
@@ -498,10 +508,35 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 					secretsHeight := availableHeight / 2
 					secretsY := contentTop + headerHeight + separatorHeight
 
-					// Build table lines to know order
-					lines := renderKVTable(kv)
+					// Determine the visual line indices for each key depending on preview mode
+					// Build the same secrets lines that drawPreview would render for the top section
 					headerX := rightX + 1
 					paneW := w - headerX
+					var visualLines []string
+					if jsonPreview {
+						// When JSON preview is active, secrets are rendered as JSON text
+						if isLikelyJSON(val) {
+							visualLines = strings.Split(val, "\n")
+						} else {
+							// We render KV as pretty JSON when jsonPreview is ON in drawPreview
+							if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
+								visualLines = strings.Split(string(b), "\n")
+							}
+						}
+					}
+					// Fallback to table lines (non-JSON preview)
+					if len(visualLines) == 0 {
+						visualLines = renderKVTable(kv)
+						// Apply the same wrapping used by drawPreview for table mode
+						if previewWrap && len(visualLines) > 1 {
+							head := visualLines[:1]
+							body := visualLines[1:]
+							body = wrapTableLines(body, paneW)
+							visualLines = append(head, body...)
+						}
+					}
+
+					// Precompute button X position aligned to the right side of the pane
 					baseLabel := "[copy]"
 					copiedLabel := "[OK]"
 					baseW := runewidth.StringWidth(baseLabel)
@@ -510,23 +545,43 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 					if copiedW > btnW {
 						btnW = copiedW
 					}
+					bx := headerX + paneW - btnW
+					if bx < headerX {
+						bx = headerX
+					}
 
-					for i, line := range lines {
-						if i >= secretsHeight {
-							break
+					// For each visible line in the secrets section, detect its key and place one button
+					searchLimit := secretsHeight
+					if searchLimit > len(visualLines) {
+						searchLimit = len(visualLines)
+					}
+					for i := 0; i < searchLimit; i++ {
+						ln := visualLines[i]
+						var key string
+						if jsonPreview {
+							// Extract key from JSON line pattern: optional spaces + "key":
+							// Simple heuristic: find first '"', then next '"', and ensure following ':' exists
+							if p1 := strings.Index(ln, "\""); p1 != -1 {
+								if p2 := strings.Index(ln[p1+1:], "\""); p2 != -1 {
+									candidate := ln[p1+1 : p1+1+p2]
+									rest := ln[p1+1+p2+1:]
+									if strings.Contains(rest, ":") {
+										key = candidate
+									}
+								}
+							}
+						} else {
+							// Table mode: take left side before ':' and trim spaces (handles padding)
+							if idx := strings.Index(ln, ":"); idx != -1 {
+								key = strings.TrimSpace(ln[:idx])
+							}
 						}
-						parts := strings.SplitN(line, ": ", 2)
-						if len(parts) < 2 {
+						if key == "" {
 							continue
 						}
-						key := strings.TrimSpace(parts[0])
 						valToCopy, ok := kv[key]
 						if !ok {
 							continue
-						}
-						bx := headerX + paneW - btnW
-						if bx < headerX {
-							bx = headerX
 						}
 						y := secretsY + i
 
@@ -599,227 +654,240 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
 	applyFilter()
 	redraw()
 
-	// Periodic status bar refresh without user input
-	// Post an interrupt every 10s to trigger redraw and statusProvider updates
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			if shouldQuit.Load() {
-				return
-			}
-			<-ticker.C
-			if shouldQuit.Load() {
-				return
-			}
-			s.PostEvent(tcell.NewEventInterrupt(nil))
-		}
-	}()
+    // Periodic status bar refresh without user input
+    // Post an interrupt every 10s to trigger redraw and statusProvider updates
+    go func() {
+        ticker := time.NewTicker(10 * time.Second)
+        defer ticker.Stop()
+        for {
+            if shouldQuit.Load() {
+                return
+            }
+            <-ticker.C
+            if shouldQuit.Load() {
+                return
+            }
+            s.PostEvent(tcell.NewEventInterrupt(nil))
+        }
+    }()
 
-	for {
-		ev := s.PollEvent()
-		switch ev := ev.(type) {
-		case *tcell.EventInterrupt:
-			redraw()
-		case *tcell.EventKey:
-			if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC {
-				return nil
-			}
-			switch ev.Key() {
-			case tcell.KeyEnter:
-				if len(filtered) == 0 {
-					return nil
-				}
-				it := filtered[cursor]
-				out := ""
-				if fetcher != nil {
-					if v, ok := previewCache[it.Path]; ok {
-						out = v
-					} else {
-						if v, err := fetcher(it.Path); err == nil {
-							previewCache[it.Path] = v
-							out = v
-						} else {
-							out = fmt.Sprintf("(error fetching values) %v", err)
-						}
-					}
-				} else if it.Value != nil {
-					b, _ := json.Marshal(it.Value)
-					out = string(b)
-				}
-				if out == "" {
-					out = "{}"
-				}
-				finished = true
-				s.Fini()
-				fmt.Println(out)
-				return nil
-			case tcell.KeyUp:
-				if cursor > 0 {
-					cursor--
-				}
-			case tcell.KeyDown:
-				if cursor < len(filtered)-1 {
-					cursor++
-				}
-			case tcell.KeyPgUp:
-				cursor -= 10
-				if cursor < 0 {
-					cursor = 0
-				}
-			case tcell.KeyPgDn:
-				cursor += 10
-				if cursor >= len(filtered) {
-					cursor = len(filtered) - 1
-				}
-			case tcell.KeyHome:
-				cursor = 0
-			case tcell.KeyEnd:
-				cursor = len(filtered) - 1
-			case tcell.KeyBackspace, tcell.KeyBackspace2:
-				if len(query) > 0 {
-					query = query[:len(query)-1]
-					applyFilter()
-				}
-			case tcell.KeyTAB:
-				previewWrap = !previewWrap
-			case tcell.KeyRune:
-				r := ev.Rune()
-				// Some terminals send Tab as a rune instead of KeyTAB.
-				if r == '\t' {
-					previewWrap = !previewWrap
-					break
-				}
-				// Toggle mouse enablement
-				if r == 'm' || r == 'M' {
-					mouseEnabled = !mouseEnabled
-					if mouseEnabled {
-						s.EnableMouse()
-					} else {
-						s.DisableMouse()
-					}
-					break
-				}
-				if r != 0 {
-					query += string(r)
-					applyFilter()
-				}
-			}
-			if activity != nil {
-				select {
-				case activity <- struct{}{}:
-				default:
-				}
-			}
-			redraw()
-		case *tcell.EventResize:
-			s.Sync()
-			redraw()
-		case *tcell.EventMouse:
-			// Mouse: wheel scroll; click to move cursor (Enter to select)
-			if !mouseEnabled {
-				break
-			}
-			mx, my := ev.Position()
-			btn := ev.Buttons()
+    for {
+        ev := s.PollEvent()
+        switch ev := ev.(type) {
+        case *tcell.EventInterrupt:
+            redraw()
+        case *tcell.EventKey:
+            if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC {
+                return nil
+            }
+            switch ev.Key() {
+            case tcell.KeyEnter:
+                if len(filtered) == 0 {
+                    return nil
+                }
+                it := filtered[cursor]
+                out := ""
+                if fetcher != nil {
+                    if v, ok := previewCache[it.Path]; ok {
+                        out = v
+                    } else {
+                        if v, err := fetcher(it.Path); err == nil {
+                            previewCache[it.Path] = v
+                            out = v
+                        } else {
+                            out = fmt.Sprintf("(error fetching values) %v", err)
+                        }
+                    }
+                } else if it.Value != nil {
+                    b, _ := json.Marshal(it.Value)
+                    out = string(b)
+                }
+                // If JSON preview mode is active, ensure we print JSON
+                if jsonPreview {
+                    if isLikelyJSON(out) {
+                        // keep as-is
+                    } else {
+                        kv := toKVFromLines(out)
+                        if len(kv) > 0 {
+                            if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
+                                out = string(b)
+                            }
+                        }
+                    }
+                }
+                if out == "" {
+                    out = "{}"
+                }
+                finished = true
+                s.Fini()
+                fmt.Println(out)
+                return nil
+            case tcell.KeyUp:
+                if cursor > 0 {
+                    cursor--
+                }
+            case tcell.KeyDown:
+                if cursor < len(filtered)-1 {
+                    cursor++
+                }
+            case tcell.KeyPgUp:
+                cursor -= 10
+                if cursor < 0 {
+                    cursor = 0
+                }
+            case tcell.KeyPgDn:
+                cursor += 10
+                if cursor >= len(filtered) {
+                    cursor = len(filtered) - 1
+                }
+            case tcell.KeyHome:
+                cursor = 0
+            case tcell.KeyEnd:
+                cursor = len(filtered) - 1
+            case tcell.KeyBackspace, tcell.KeyBackspace2:
+                if len(query) > 0 {
+                    query = query[:len(query)-1]
+                    applyFilter()
+                }
+            case tcell.KeyTAB:
+                previewWrap = !previewWrap
+            case tcell.KeyRune:
+                r := ev.Rune()
+                // Some terminals send Tab as a rune instead of KeyTAB.
+                if r == '\t' {
+                    previewWrap = !previewWrap
+                    break
+                }
+                // Toggle mouse enablement
+                if r == 'm' || r == 'M' {
+                    mouseEnabled = !mouseEnabled
+                    if mouseEnabled {
+                        s.EnableMouse()
+                    } else {
+                        s.DisableMouse()
+                    }
+                    break
+                }
+                if r != 0 {
+                    query += string(r)
+                    applyFilter()
+                }
+            }
+            if activity != nil {
+                select {
+                case activity <- struct{}{}:
+                default:
+                }
+            }
+            redraw()
+        case *tcell.EventResize:
+            s.Sync()
+            redraw()
+        case *tcell.EventMouse:
+            // Mouse: wheel scroll; click to move cursor (Enter to select)
+            if !mouseEnabled {
+                break
+            }
+            mx, my := ev.Position()
+            btn := ev.Buttons()
 
-			if activity != nil {
-				select {
-				case activity <- struct{}{}:
-				default:
-				}
-			}
+            if activity != nil {
+                select {
+                case activity <- struct{}{}:
+                default:
+                }
+            }
 
-			// Map click position to left list rows
-			w, h := s.Size()
-			contentTop := 2
-			maxRows := h - contentTop - 1
-			if maxRows < 1 {
-				break
-			}
-			leftW := w / 2
-			if leftW < 20 {
-				leftW = w - 30
-				if leftW < 10 {
-					leftW = w
-				}
-			}
-			if leftW > w {
-				leftW = w
-			}
+            // Map click position to left list rows
+            w, h := s.Size()
+            contentTop := 2
+            maxRows := h - contentTop - 1
+            if maxRows < 1 {
+                break
+            }
+            leftW := w / 2
+            if leftW < 20 {
+                leftW = w - 30
+                if leftW < 10 {
+                    leftW = w
+                }
+            }
+            if leftW > w {
+                leftW = w
+            }
 
-			// Wheel scroll
-			if btn&tcell.WheelUp != 0 {
-				if cursor > 0 {
-					cursor--
-				}
-				redraw()
-				break
-			}
-			if btn&tcell.WheelDown != 0 {
-				if cursor < len(filtered)-1 {
-					cursor++
-				}
-				redraw()
-				break
-			}
+            // Wheel scroll
+            if btn&tcell.WheelUp != 0 {
+                if cursor > 0 {
+                    cursor--
+                }
+                redraw()
+                break
+            }
+            if btn&tcell.WheelDown != 0 {
+                if cursor < len(filtered)-1 {
+                    cursor++
+                }
+                redraw()
+                break
+            }
 
-			// Per-secret copy buttons click (right pane)
-			if btn&tcell.Button1 != 0 {
-				for _, b := range perLineCopyBtns {
-					if my == b.Y && mx >= b.X && mx < b.X+b.W {
-						_ = copyToClipboard(b.Val)
-						perKeyFlash[b.Key] = time.Now().Add(1200 * time.Millisecond)
-						redraw()
-						// schedule a delayed redraw to clear the flash
-						go func() {
-							time.Sleep(1300 * time.Millisecond)
-							s.PostEvent(tcell.NewEventInterrupt(nil))
-						}()
-						break
-					}
-				}
-			}
+            // Per-secret copy buttons click (right pane)
+            if btn&tcell.Button1 != 0 {
+                for _, b := range perLineCopyBtns {
+                    if my == b.Y && mx >= b.X && mx < b.X+b.W {
+                        _ = copyToClipboard(b.Val)
+                        perKeyFlash[b.Key] = time.Now().Add(1200 * time.Millisecond)
+                        redraw()
+                        // schedule a delayed redraw to clear the flash
+                        go func() {
+                            time.Sleep(1300 * time.Millisecond)
+                            s.PostEvent(tcell.NewEventInterrupt(nil))
+                        }()
+                        break
+                    }
+                }
+            }
 
-			// Header buttons click
-			if btn&tcell.Button1 != 0 {
-				// Toggle view button
-				if toggleBtnW > 0 && my == toggleBtnY && mx >= toggleBtnX && mx < toggleBtnX+toggleBtnW {
-					jsonPreview = !jsonPreview
-					redraw()
-					break
-				}
-				if copyBtnW > 0 && my == copyBtnY && mx >= copyBtnX && mx < copyBtnX+copyBtnW {
-					if currentFetchedVal != "" {
-						_ = copyToClipboard(currentFetchedVal)
-						copyFlashUntil = time.Now().Add(1200 * time.Millisecond)
-						redraw()
-						go func() {
-							time.Sleep(1300 * time.Millisecond)
-							s.PostEvent(tcell.NewEventInterrupt(nil))
-						}()
-						break
-					}
-				}
-			}
+            // Header buttons click
+            if btn&tcell.Button1 != 0 {
+                // Toggle view button
+                if toggleBtnW > 0 && my == toggleBtnY && mx >= toggleBtnX && mx < toggleBtnX+toggleBtnW {
+                    jsonPreview = !jsonPreview
+                    redraw()
+                    break
+                }
+                if copyBtnW > 0 && my == copyBtnY && mx >= copyBtnX && mx < copyBtnX+copyBtnW {
+                    if currentFetchedVal != "" {
+                        _ = copyToClipboard(currentFetchedVal)
+                        copyFlashUntil = time.Now().Add(1200 * time.Millisecond)
+                        redraw()
+                        go func() {
+                            time.Sleep(1300 * time.Millisecond)
+                            s.PostEvent(tcell.NewEventInterrupt(nil))
+                        }()
+                        break
+                    }
+                }
+            }
 
-			// Left click: move cursor only
-			if btn&tcell.Button1 != 0 {
-				if mx >= 0 && mx < leftW && my >= contentTop && my < contentTop+maxRows {
-					row := my - contentTop
-					newCursor := offset + row
-					if newCursor >= 0 && newCursor < len(filtered) {
-						cursor = newCursor
-						redraw()
-					}
-				}
-			}
-		}
-		// Check for external quit
-		if shouldQuit.Load() {
-			return nil
-		}
-	}
+            // Left click: move cursor only
+            if btn&tcell.Button1 != 0 {
+                if mx >= 0 && mx < leftW && my >= contentTop && my < contentTop+maxRows {
+                    row := my - contentTop
+                    newCursor := offset + row
+                    if newCursor >= 0 && newCursor < len(filtered) {
+                        cursor = newCursor
+                        redraw()
+                    }
+                }
+            }
+        }
+        // Check for external quit
+        if shouldQuit.Load() {
+            return nil
+        }
+    }
 }
 
 func makeSeparator(w int) string {
