@@ -3,7 +3,6 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -348,311 +347,138 @@ func putLineWithHighlights(s tcell.Screen, x, y int, text, query string, baseSty
 	}
 }
 
-// RunStream launches the interactive TUI and progressively receives items from a channel.
+// RunStream is a small wrapper that delegates to the internal implementation.
+// Kept minimal to improve readability and testability.
+func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bool, fetcher ValueFetcher, policyFetcher PolicyFetcher, status StatusProvider, quit <-chan struct{}, activity chan<- struct{}) error {
+    return runStreamImpl(itemsCh, printValues, jsonPreview, fetcher, policyFetcher, status, quit, activity)
+}
+
 // It mirrors the old Run() behavior, including lazy preview fetching when printValues is true.
 // quit: when a value arrives, the UI exits gracefully.
 // activity: UI sends an event on any user interaction (keys/mouse) to help the caller detect idleness.
-func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bool, fetcher ValueFetcher, policyFetcher PolicyFetcher, status StatusProvider, quit <-chan struct{}, activity chan<- struct{}) error {
-	s, err := tcell.NewScreen()
-	if err != nil {
-		return err
-	}
-	if err := s.Init(); err != nil {
-		return err
-	}
-	// Enable mouse by default; user can toggle with 'm'
-	s.EnableMouse()
-	defer s.DisableMouse()
-	defer s.Fini()
+func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bool, fetcher ValueFetcher, policyFetcher PolicyFetcher, status StatusProvider, quit <-chan struct{}, activity chan<- struct{}) error {
+    s, err := tcell.NewScreen()
+    if err != nil {
+        return err
+    }
+    if err := s.Init(); err != nil {
+        return err
+    }
+    // Enable mouse by default; user can toggle with 'm'
+    s.EnableMouse()
+    defer s.DisableMouse()
+    defer s.Fini()
 
-	finished := false
-	defer func() {
-		if !finished {
-			s.Fini()
-		}
-	}()
+    finished := false
+    defer func() {
+        if !finished {
+            s.Fini()
+        }
+    }()
 
-	items := make([]search.FoundItem, 0, 1024)
-	query := ""
-	filtered := make([]search.FoundItem, 0, 1024)
-	cursor := 0
-	offset := 0
-	previewCache := make(map[string]string)
-	previewErr := make(map[string]error)
+    items := make([]search.FoundItem, 0, 1024)
+    query := ""
+    filtered := make([]search.FoundItem, 0, 1024)
+    cursor := 0
+    offset := 0
+    previewCache := make(map[string]string)
 
-	// Per-secret copy buttons (drawn in redraw) and flash state keyed by secret key
-	type copyBtn struct {
-		X, Y, W  int
-		Key, Val string
-	}
-	var perLineCopyBtns []copyBtn
-	perKeyFlash := make(map[string]time.Time)
+    // Initialize consolidated UI state (partial adoption in this step)
+    uiState := &UIState{
+        Items:         make([]search.FoundItem, 0, 1024),
+        Filtered:      make([]search.FoundItem, 0, 1024),
+        PreviewCache:  make(map[string]string),
+        PreviewErr:    make(map[string]error),
+        PerKeyFlash:   make(map[string]time.Time),
+        PreviewWrap:   false,
+        MouseEnabled:  true,
+        PrintValues:   printValues,
+        JSONPreview:   jsonPreview,
+    }
 
-	// Per-secret copy buttons (drawn in redraw) and flash state keyed by secret key
+    // Per-secret copy buttons (drawn in redraw) and flash state keyed by secret key
+    type copyBtn struct {
+        X, Y, W  int
+        Key, Val string
+    }
+    uiState.PerLineCopyBtns = uiState.PerLineCopyBtns[:0]
+    uiState.PerKeyFlash = make(map[string]time.Time)
 
-	// Header full-secret copy button state
-	copyBtnX, copyBtnY, copyBtnW := -1, -1, 0
-	var copyFlashUntil time.Time
-	copyFlashUntil = time.Time{}
-	currentFetchedVal := ""
+    // Header full-secret copy button state
+    copyBtnX, copyBtnY, copyBtnW := -1, -1, 0
+    uiState.CopyFlashUntil = time.Time{}
+    uiState.CurrentFetchedVal = ""
 
-	// Header toggle button [json]/[tbl]
-	toggleBtnX, toggleBtnY, toggleBtnW := -1, -1, 0
+    // Header toggle button [json]/[tbl]
+    toggleBtnX, toggleBtnY, toggleBtnW := -1, -1, 0
 
-	// quit signal handling: wake event loop when requested to exit
-	var shouldQuit atomic.Bool
-	if quit != nil {
-		go func() {
-			<-quit
-			shouldQuit.Store(true)
-			// interrupt the event wait to allow graceful exit
-			s.PostEvent(tcell.NewEventInterrupt(nil))
-		}()
-	}
+    // quit signal handling: wake event loop when requested to exit
+    var shouldQuit atomic.Bool
+    if quit != nil {
+        go func() {
+            <-quit
+            shouldQuit.Store(true)
+            // interrupt the event wait to allow graceful exit
+            s.PostEvent(tcell.NewEventInterrupt(nil))
+        }()
+    }
 
-	previewWrap := false
-	mouseEnabled := true
+    redraw := func() {
+        // Sync locals into UIState before rendering
+        uiState.Items = items
+        uiState.Filtered = filtered
+        uiState.Query = query
+        uiState.Cursor = cursor
+        uiState.Offset = offset
 
-	redraw := func() {
-		s.Clear()
-		w, h := s.Size()
+        copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW = RenderAll(
+            s,
+            printValues,
+            fetcher,
+            policyFetcher,
+            status,
+            uiState,
+        )
+    }
 
-		prompt := "> " + query
-		putLine(s, 0, 0, prompt)
+    applyFilter := func() {
+        q := strings.ToLower(strings.TrimSpace(query))
+        if q == "" {
+            filtered = append(filtered[:0], items...)
+        } else {
+            filtered = filtered[:0]
+            for _, it := range items {
+                if strings.Contains(strings.ToLower(it.Path), q) {
+                    filtered = append(filtered, it)
+                }
+            }
+            sort.Slice(filtered, func(i, j int) bool { return filtered[i].Path < filtered[j].Path })
+        }
+        if cursor >= len(filtered) {
+            cursor = len(filtered) - 1
+        }
+        if cursor < 0 {
+            cursor = 0
+        }
+        offset = 0
+    }
 
-		wrapState := "off"
-		if previewWrap {
-			wrapState = "on"
-		}
-		mouseState := "off"
-		if mouseEnabled {
-			mouseState = "on"
-		}
-		help := fmt.Sprintf("%d/%d  (Up/Down: move, Enter: select, Tab: wrap[%s], m: mouse[%s], Esc: quit)", len(filtered), len(items), wrapState, mouseState)
-		putLine(s, 0, 1, help)
+    // receive items and trigger redraws
+    go func() {
+        for it := range itemsCh {
+            items = append(items, it)
+            q := strings.ToLower(strings.TrimSpace(query))
+            if q == "" || strings.Contains(strings.ToLower(it.Path), q) {
+                filtered = append(filtered, it)
+                sort.Slice(filtered, func(i, j int) bool { return filtered[i].Path < filtered[j].Path })
+            }
+            s.PostEvent(tcell.NewEventInterrupt(nil))
+        }
+        s.PostEvent(tcell.NewEventInterrupt(nil))
+    }()
 
-		contentTop := 2
-		// Reserve 1 line for status bar at the bottom
-		maxRows := h - contentTop - 1
-		if maxRows < 1 {
-			s.Show()
-			return
-		}
-
-		leftW := computeLeftWidth(w)
-		rightX := leftW
-
-		drawVerticalSeparator(s, rightX, h)
-
-		if cursor < offset {
-			offset = cursor
-		}
-		if cursor >= offset+maxRows {
-			offset = cursor - maxRows + 1
-		}
-		drawLeftList(s, contentTop, leftW, w, filtered, strings.TrimSpace(query), cursor, offset, maxRows)
-
-		if rightX+1 < w && maxRows > 0 {
-			var val string
-			var policies []string
-			if len(filtered) > 0 && cursor >= 0 && cursor < len(filtered) {
-				p := filtered[cursor].Path
-				if cached, ok := previewCache[p]; ok {
-					val = cached
-				} else if fetcher != nil && printValues {
-					if v, err := fetcher(p); err == nil {
-						val = v
-						previewCache[p] = v
-					} else {
-						msg := fmt.Sprintf("(error fetching values) %v", err)
-						previewCache[p] = msg
-						previewErr[p] = err
-						val = msg
-					}
-				}
-
-				// Fetch policies if policy fetcher is available
-				if policyFetcher != nil {
-					if p, err := policyFetcher(p); err == nil {
-						policies = p
-					}
-				}
-			}
-			drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, filtered, cursor, printValues, jsonPreview, val, policies, previewWrap)
-
-			// Remember current fetched value for header copy button
-			currentFetchedVal = val
-
-			// Draw per-secret copy buttons (right-aligned) when values are shown
-			perLineCopyBtns = perLineCopyBtns[:0]
-			if printValues {
-				kv := toKVFromLines(val)
-				if len(kv) > 0 {
-					// If JSON preview is active, ensure header copy uses JSON text
-					if jsonPreview {
-						if isLikelyJSON(val) {
-							currentFetchedVal = val
-						} else {
-							if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
-								currentFetchedVal = string(b)
-							}
-						}
-					}
-					// Recompute layout similar to drawPreview's top section
-					headerHeight := 1
-					separatorHeight := 1
-					availableHeight := maxRows - headerHeight - separatorHeight
-					if availableHeight < 0 {
-						availableHeight = 0
-					}
-					secretsHeight := availableHeight / 2
-					secretsY := contentTop + headerHeight + separatorHeight
-
-					// Determine the visual line indices for each key depending on preview mode
-					// Build the same secrets lines that drawPreview would render for the top section
-					headerX := rightX + 1
-					paneW := w - headerX
-					var visualLines []string
-					if jsonPreview {
-						// When JSON preview is active, secrets are rendered as JSON text
-						if isLikelyJSON(val) {
-							visualLines = strings.Split(val, "\n")
-						} else {
-							// We render KV as pretty JSON when jsonPreview is ON in drawPreview
-							if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
-								visualLines = strings.Split(string(b), "\n")
-							}
-						}
-					}
-					// Fallback to table lines (non-JSON preview)
-					if len(visualLines) == 0 {
-						visualLines = renderKVTable(kv)
-						// Apply the same wrapping used by drawPreview for table mode
-						if previewWrap && len(visualLines) > 1 {
-							head := visualLines[:1]
-							body := visualLines[1:]
-							body = wrapTableLines(body, paneW)
-							visualLines = append(head, body...)
-						}
-					}
-
-					// Precompute button X position aligned to the right side of the pane
-					baseLabel := "[copy]"
-					copiedLabel := "[OK]"
-					baseW := runewidth.StringWidth(baseLabel)
-					copiedW := runewidth.StringWidth(copiedLabel)
-					btnW := baseW
-					if copiedW > btnW {
-						btnW = copiedW
-					}
-					bx := headerX + paneW - btnW
-					if bx < headerX {
-						bx = headerX
-					}
-
-					// For each visible line in the secrets section, detect its key and place one button
-					searchLimit := secretsHeight
-					if searchLimit > len(visualLines) {
-						searchLimit = len(visualLines)
-					}
-					for i := 0; i < searchLimit; i++ {
-						ln := visualLines[i]
-						var key string
-						if jsonPreview {
-							// Extract key from JSON line pattern: optional spaces + "key":
-							// Simple heuristic: find first '"', then next '"', and ensure following ':' exists
-							if p1 := strings.Index(ln, "\""); p1 != -1 {
-								if p2 := strings.Index(ln[p1+1:], "\""); p2 != -1 {
-									candidate := ln[p1+1 : p1+1+p2]
-									rest := ln[p1+1+p2+1:]
-									if strings.Contains(rest, ":") {
-										key = candidate
-									}
-								}
-							}
-						} else {
-							// Table mode: take left side before ':' and trim spaces (handles padding)
-							if idx := strings.Index(ln, ":"); idx != -1 {
-								key = strings.TrimSpace(ln[:idx])
-							}
-						}
-						if key == "" {
-							continue
-						}
-						valToCopy, ok := kv[key]
-						if !ok {
-							continue
-						}
-						y := secretsY + i
-
-						lbl := baseLabel
-						if until, ok := perKeyFlash[key]; ok && time.Now().Before(until) {
-							lbl = copiedLabel
-						}
-						if pad := btnW - runewidth.StringWidth(lbl); pad > 0 {
-							lbl = lbl + strings.Repeat(" ", pad)
-						}
-						putLine(s, bx, y, lbl)
-						perLineCopyBtns = append(perLineCopyBtns, copyBtn{X: bx, Y: y, W: btnW, Key: key, Val: valToCopy})
-					}
-				}
-			}
-
-			// Draw header buttons (right aligned)
-			if printValues {
-				headerX := rightX + 1
-				headerY := contentTop
-				paneW := w - headerX
-				copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW = drawHeaderButtons(s, headerX, headerY, paneW, jsonPreview, copyFlashUntil)
-			} else {
-				copyBtnX, copyBtnY, copyBtnW = -1, -1, 0
-				toggleBtnX, toggleBtnY, toggleBtnW = -1, -1, 0
-			}
-		}
-
-		// Draw bottom status bar
-		drawStatusBar(s, 0, h-1, w, status)
-
-		s.Show()
-	}
-	applyFilter := func() {
-		q := strings.ToLower(strings.TrimSpace(query))
-		if q == "" {
-			filtered = append(filtered[:0], items...)
-		} else {
-			filtered = filtered[:0]
-			for _, it := range items {
-				if strings.Contains(strings.ToLower(it.Path), q) {
-					filtered = append(filtered, it)
-				}
-			}
-			sort.Slice(filtered, func(i, j int) bool { return filtered[i].Path < filtered[j].Path })
-		}
-		if cursor >= len(filtered) {
-			cursor = len(filtered) - 1
-		}
-		if cursor < 0 {
-			cursor = 0
-		}
-		offset = 0
-	}
-
-	// receive items and trigger redraws
-	go func() {
-		for it := range itemsCh {
-			items = append(items, it)
-			q := strings.ToLower(strings.TrimSpace(query))
-			if q == "" || strings.Contains(strings.ToLower(it.Path), q) {
-				filtered = append(filtered, it)
-				sort.Slice(filtered, func(i, j int) bool { return filtered[i].Path < filtered[j].Path })
-			}
-			s.PostEvent(tcell.NewEventInterrupt(nil))
-		}
-		s.PostEvent(tcell.NewEventInterrupt(nil))
-	}()
-
-	applyFilter()
-	redraw()
+    applyFilter()
+    redraw()
 
     // Periodic status bar refresh without user input
     // Post an interrupt every 10s to trigger redraw and statusProvider updates
@@ -677,217 +503,20 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
         case *tcell.EventInterrupt:
             redraw()
         case *tcell.EventKey:
-            if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC {
+            shouldRedraw, shouldQuit := HandleKey(s, ev, &items, &filtered, &query, &cursor, &offset, previewCache, fetcher, uiState, applyFilter, activity)
+            if shouldQuit {
                 return nil
             }
-            switch ev.Key() {
-            case tcell.KeyEnter:
-                if len(filtered) == 0 {
-                    return nil
-                }
-                it := filtered[cursor]
-                out := ""
-                if fetcher != nil {
-                    if v, ok := previewCache[it.Path]; ok {
-                        out = v
-                    } else {
-                        if v, err := fetcher(it.Path); err == nil {
-                            previewCache[it.Path] = v
-                            out = v
-                        } else {
-                            out = fmt.Sprintf("(error fetching values) %v", err)
-                        }
-                    }
-                } else if it.Value != nil {
-                    b, _ := json.Marshal(it.Value)
-                    out = string(b)
-                }
-                // Match printed output to current preview mode
-                if jsonPreview {
-                    // Ensure JSON output when in JSON mode
-                    if isLikelyJSON(out) {
-                        // keep as-is
-                    } else {
-                        kv := toKVFromLines(out)
-                        if len(kv) > 0 {
-                            if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
-                                out = string(b)
-                            }
-                        }
-                    }
-                } else {
-                    // Ensure table-style output when in table mode
-                    if isLikelyJSON(out) {
-                        lines := toLinesFromJSONText(out)
-                        out = strings.Join(lines, "\n")
-                    }
-                }
-                if out == "" {
-                    out = "{}"
-                }
-                finished = true
-                s.Fini()
-                fmt.Println(out)
-                return nil
-            case tcell.KeyUp:
-                if cursor > 0 {
-                    cursor--
-                }
-            case tcell.KeyDown:
-                if cursor < len(filtered)-1 {
-                    cursor++
-                }
-            case tcell.KeyPgUp:
-                cursor -= 10
-                if cursor < 0 {
-                    cursor = 0
-                }
-            case tcell.KeyPgDn:
-                cursor += 10
-                if cursor >= len(filtered) {
-                    cursor = len(filtered) - 1
-                }
-            case tcell.KeyHome:
-                cursor = 0
-            case tcell.KeyEnd:
-                cursor = len(filtered) - 1
-            case tcell.KeyBackspace, tcell.KeyBackspace2:
-                if len(query) > 0 {
-                    query = query[:len(query)-1]
-                    applyFilter()
-                }
-            case tcell.KeyTAB:
-                previewWrap = !previewWrap
-            case tcell.KeyRune:
-                r := ev.Rune()
-                // Some terminals send Tab as a rune instead of KeyTAB.
-                if r == '\t' {
-                    previewWrap = !previewWrap
-                    break
-                }
-                // Toggle mouse enablement
-                if r == 'm' || r == 'M' {
-                    mouseEnabled = !mouseEnabled
-                    if mouseEnabled {
-                        s.EnableMouse()
-                    } else {
-                        s.DisableMouse()
-                    }
-                    break
-                }
-                if r != 0 {
-                    query += string(r)
-                    applyFilter()
-                }
+            if shouldRedraw {
+                redraw()
             }
-            if activity != nil {
-                select {
-                case activity <- struct{}{}:
-                default:
-                }
-            }
-            redraw()
         case *tcell.EventResize:
             s.Sync()
             redraw()
         case *tcell.EventMouse:
-            // Mouse: wheel scroll; click to move cursor (Enter to select)
-            if !mouseEnabled {
-                break
-            }
-            mx, my := ev.Position()
-            btn := ev.Buttons()
-
-            if activity != nil {
-                select {
-                case activity <- struct{}{}:
-                default:
-                }
-            }
-
-            // Map click position to left list rows
-            w, h := s.Size()
-            contentTop := 2
-            maxRows := h - contentTop - 1
-            if maxRows < 1 {
-                break
-            }
-            leftW := w / 2
-            if leftW < 20 {
-                leftW = w - 30
-                if leftW < 10 {
-                    leftW = w
-                }
-            }
-            if leftW > w {
-                leftW = w
-            }
-
-            // Wheel scroll
-            if btn&tcell.WheelUp != 0 {
-                if cursor > 0 {
-                    cursor--
-                }
+            shouldRedraw := HandleMouse(s, ev, &filtered, &cursor, &offset, uiState, copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW, activity)
+            if shouldRedraw {
                 redraw()
-                break
-            }
-            if btn&tcell.WheelDown != 0 {
-                if cursor < len(filtered)-1 {
-                    cursor++
-                }
-                redraw()
-                break
-            }
-
-            // Per-secret copy buttons click (right pane)
-            if btn&tcell.Button1 != 0 {
-                for _, b := range perLineCopyBtns {
-                    if my == b.Y && mx >= b.X && mx < b.X+b.W {
-                        _ = copyToClipboard(b.Val)
-                        perKeyFlash[b.Key] = time.Now().Add(1200 * time.Millisecond)
-                        redraw()
-                        // schedule a delayed redraw to clear the flash
-                        go func() {
-                            time.Sleep(1300 * time.Millisecond)
-                            s.PostEvent(tcell.NewEventInterrupt(nil))
-                        }()
-                        break
-                    }
-                }
-            }
-
-            // Header buttons click
-            if btn&tcell.Button1 != 0 {
-                // Toggle view button
-                if toggleBtnW > 0 && my == toggleBtnY && mx >= toggleBtnX && mx < toggleBtnX+toggleBtnW {
-                    jsonPreview = !jsonPreview
-                    redraw()
-                    break
-                }
-                if copyBtnW > 0 && my == copyBtnY && mx >= copyBtnX && mx < copyBtnX+copyBtnW {
-                    if currentFetchedVal != "" {
-                        _ = copyToClipboard(currentFetchedVal)
-                        copyFlashUntil = time.Now().Add(1200 * time.Millisecond)
-                        redraw()
-                        go func() {
-                            time.Sleep(1300 * time.Millisecond)
-                            s.PostEvent(tcell.NewEventInterrupt(nil))
-                        }()
-                        break
-                    }
-                }
-            }
-
-            // Left click: move cursor only
-            if btn&tcell.Button1 != 0 {
-                if mx >= 0 && mx < leftW && my >= contentTop && my < contentTop+maxRows {
-                    row := my - contentTop
-                    newCursor := offset + row
-                    if newCursor >= 0 && newCursor < len(filtered) {
-                        cursor = newCursor
-                        redraw()
-                    }
-                }
             }
         }
         // Check for external quit
@@ -895,256 +524,6 @@ func RunStream(itemsCh <-chan search.FoundItem, printValues bool, jsonPreview bo
             return nil
         }
     }
-}
-
-func makeSeparator(w int) string {
-	return strings.Repeat("-", w)
-}
-
-func isLikelyJSON(s string) bool {
-	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")
-}
-
-// toLinesFromJSONText tries to present JSON text with readable multi-line strings.
-//   - If JSON is an object: render key: value; for string values, expand \n into actual new lines
-//     and indent continuation lines to align after "key: ".
-//   - If JSON is a string: expand escapes and split into lines.
-//   - Otherwise: pretty-print and split by newlines.
-func toLinesFromJSONText(s string) []string {
-	var v interface{}
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		// Fallback to original split
-		return strings.Split(s, "\n")
-	}
-	switch t := v.(type) {
-	case map[string]interface{}:
-		// Stable order
-		keys := make([]string, 0, len(t))
-		for k := range t {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		lines := make([]string, 0, len(keys))
-		for _, k := range keys {
-			val := t[k]
-			switch sv := val.(type) {
-			case string:
-				parts := strings.Split(sv, "\n")
-				if len(parts) == 0 {
-					lines = append(lines, fmt.Sprintf("%s:", k))
-					continue
-				}
-				// first line with key
-				lines = append(lines, fmt.Sprintf("%s: %s", k, parts[0]))
-				// continuation lines aligned after "key: "
-				pad := strings.Repeat(" ", len(k)+2)
-				for i := 1; i < len(parts); i++ {
-					lines = append(lines, pad+parts[i])
-				}
-			default:
-				// marshal compact for non-strings
-				b, err := json.Marshal(val)
-				if err != nil {
-					b = []byte(fmt.Sprintf("%v", val))
-				}
-				lines = append(lines, fmt.Sprintf("%s: %s", k, string(b)))
-			}
-		}
-		return lines
-	case string:
-		return strings.Split(t, "\n")
-	default:
-		b, err := json.MarshalIndent(t, "", "  ")
-		if err != nil {
-			return strings.Split(s, "\n")
-		}
-		return strings.Split(string(b), "\n")
-	}
-}
-
-func toKVFromLines(s string) map[string]string {
-	kv := make(map[string]string)
-	var curKey string
-	var curVal []string
-	flush := func() {
-		if curKey != "" {
-			kv[curKey] = strings.TrimSpace(strings.Join(curVal, "\n"))
-			curKey = ""
-			curVal = nil
-		}
-	}
-	for _, raw := range strings.Split(s, "\n") {
-		ln := raw
-		if kvPair := strings.SplitN(ln, ":", 2); len(kvPair) == 2 {
-			// New key starts; flush previous if any
-			flush()
-			curKey = strings.TrimSpace(kvPair[0])
-			curVal = []string{strings.TrimSpace(kvPair[1])}
-			continue
-		}
-		// Continuation line: append only for indented or PEM/base64-ish blocks
-		if curKey != "" {
-			lnNoCR := strings.TrimRight(ln, "\r")
-			lnTrim := strings.TrimSpace(lnNoCR)
-			first := ""
-			if len(curVal) > 0 {
-				first = curVal[0]
-			}
-			isIndented := strings.HasPrefix(ln, " ") || strings.HasPrefix(ln, "\t")
-			looksPEM := strings.HasPrefix(first, "-----BEGIN ") || strings.HasPrefix(lnTrim, "-----END ")
-			looksB64 := len(lnTrim) >= 32 && isBase64Charset(lnTrim)
-			if isIndented || looksPEM || looksB64 {
-				curVal = append(curVal, lnNoCR)
-			}
-		}
-	}
-	flush()
-	return kv
-}
-
-func toKVFromMap(m map[string]interface{}) map[string]string {
-	kv := make(map[string]string)
-	for k, v := range m {
-		kv[k] = fmt.Sprintf("%v", v)
-	}
-	return kv
-}
-
-func renderKVTable(kv map[string]string) []string {
-	// Stable lexical order of keys for deterministic table view
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	maxK := 0
-	for _, k := range keys {
-		if len(k) > maxK {
-			maxK = len(k)
-		}
-	}
-
-	lines := make([]string, 0, len(keys))
-	for _, k := range keys {
-		v := kv[k]
-		// If value looks like a PEM/certificate or a very long base64 blob, split nicely with indentation
-		pemLines := splitPEMish(v)
-		if len(pemLines) > 1 {
-			// First line with key and first pem line
-			lines = append(lines, fmt.Sprintf("%-*s: %s", maxK, k, pemLines[0]))
-			// Continuation lines aligned after "key: "
-			pad := strings.Repeat(" ", maxK+2)
-			for i := 1; i < len(pemLines); i++ {
-				lines = append(lines, pad+pemLines[i])
-			}
-			continue
-		}
-		// Generic multi-line support even if not PEM/base64
-		if strings.Contains(v, "\n") {
-			parts := strings.Split(v, "\n")
-			lines = append(lines, fmt.Sprintf("%-*s: %s", maxK, k, parts[0]))
-			pad := strings.Repeat(" ", maxK+2)
-			for i := 1; i < len(parts); i++ {
-				lines = append(lines, pad+parts[i])
-			}
-			continue
-		}
-		line := fmt.Sprintf("%-*s: %s", maxK, k, v)
-		lines = append(lines, line)
-	}
-	return lines
-}
-
-// splitPEMish splits certificate/PEM-like strings or long base64 blobs into readable lines.
-// Rules:
-//   - If input contains PEM headers (-----BEGIN ...----- / -----END ...-----), preserve headers
-//     and split the base64 body into 64-char lines.
-//   - Else, if input is a single long base64-ish string (> 100 chars, only base64 charset),
-//     chunk into 64-char lines.
-//
-// Returns a slice of lines; len==1 means no special handling applied.
-func splitPEMish(s string) []string {
-	if s == "" {
-		return []string{""}
-	}
-	// Quick path: if already has newlines and looks like PEM, normalize line lengths but keep structure
-	if strings.Contains(s, "-----BEGIN ") && strings.Contains(s, "-----END ") {
-		// Extract header, body, footer
-		lines := strings.Split(s, "\n")
-		hdrIdx, ftrIdx := -1, -1
-		for i, ln := range lines {
-			if strings.HasPrefix(strings.TrimSpace(ln), "-----BEGIN ") {
-				hdrIdx = i
-			}
-			if strings.HasPrefix(strings.TrimSpace(ln), "-----END ") {
-				ftrIdx = i
-			}
-		}
-		if hdrIdx != -1 && ftrIdx != -1 && ftrIdx >= hdrIdx {
-			hdr := strings.TrimSpace(lines[hdrIdx])
-			ftr := strings.TrimSpace(lines[ftrIdx])
-			// Concatenate body (strip spaces)
-			body := strings.Join(lines[hdrIdx+1:ftrIdx], "")
-			body = compactBase64(body)
-			chunks := chunkString(body, 64)
-			out := make([]string, 0, 2+len(chunks))
-			out = append(out, hdr)
-			out = append(out, chunks...)
-			out = append(out, ftr)
-			return out
-		}
-	}
-	// No explicit headers: treat as base64-ish if long enough and charset matches
-	compact := compactBase64(s)
-	if len(compact) >= 100 && isBase64Charset(compact) {
-		return chunkString(compact, 64)
-	}
-	return []string{s}
-}
-
-func isBase64Charset(s string) bool {
-	for _, r := range s {
-		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func compactBase64(s string) string {
-	// Remove whitespace
-	b := make([]rune, 0, len(s))
-	for _, r := range s {
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			continue
-		}
-		b = append(b, r)
-	}
-	return string(b)
-}
-
-func chunkString(s string, n int) []string {
-	if n <= 0 || len(s) <= n {
-		return []string{s}
-	}
-	out := make([]string, 0, (len(s)+n-1)/n)
-	for i := 0; i < len(s); i += n {
-		end := i + n
-		if end > len(s) {
-			end = len(s)
-		}
-		out = append(out, s[i:end])
-	}
-	return out
-}
-
-// copyToClipboard copies text to the macOS clipboard using pbcopy.
-func copyToClipboard(text string) error {
-	cmd := exec.Command("pbcopy")
-	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
 }
 
 func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, jsonPreview bool, fetched string, policies []string, wrap bool) {
