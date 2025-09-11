@@ -80,29 +80,36 @@ func HandleKey(
 	case tcell.KeyUp:
 		if *cursor > 0 {
 			*cursor--
+			uiState.RevealAll = false
 		}
 	case tcell.KeyDown:
 		if *cursor < len(*filtered)-1 {
 			*cursor++
+			uiState.RevealAll = false
 		}
 	case tcell.KeyPgUp:
 		*cursor -= 10
 		if *cursor < 0 {
 			*cursor = 0
 		}
+		uiState.RevealAll = false
 	case tcell.KeyPgDn:
 		*cursor += 10
 		if *cursor >= len(*filtered) {
 			*cursor = len(*filtered) - 1
 		}
+		uiState.RevealAll = false
 	case tcell.KeyHome:
 		*cursor = 0
+		uiState.RevealAll = false
 	case tcell.KeyEnd:
 		*cursor = len(*filtered) - 1
+		uiState.RevealAll = false
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(*query) > 0 {
 			*query = (*query)[:len(*query)-1]
 			applyFilter()
+			uiState.RevealAll = false
 		}
 	case tcell.KeyLeft:
 		// Toggle mouse enablement with Left Arrow
@@ -124,6 +131,7 @@ func HandleKey(
 		if r != 0 {
 			*query += string(r)
 			applyFilter()
+			uiState.RevealAll = false
 		}
 	}
 	if activity != nil {
@@ -145,6 +153,7 @@ func HandleMouse(
 	uiState *UIState,
 	copyBtnX, copyBtnY, copyBtnW int,
 	toggleBtnX, toggleBtnY, toggleBtnW int,
+	revealBtnX, revealBtnY, revealBtnW int,
 	activity chan<- struct{},
 ) (shouldRedraw bool) {
 	if !uiState.MouseEnabled {
@@ -206,9 +215,18 @@ func HandleMouse(
 			uiState.JSONPreview = !uiState.JSONPreview
 			return true
 		}
+		// Reveal/Hide button
+		if revealBtnW > 0 && my == revealBtnY && mx >= revealBtnX && mx < revealBtnX+revealBtnW {
+			uiState.RevealAll = !uiState.RevealAll
+			return true
+		}
 		if copyBtnW > 0 && my == copyBtnY && mx >= copyBtnX && mx < copyBtnX+copyBtnW {
 			if uiState.CurrentFetchedVal != "" {
-				_ = copyToClipboard(uiState.CurrentFetchedVal)
+				val := uiState.CurrentFetchedVal
+				if !uiState.RevealAll {
+					val = "***"
+				}
+				_ = copyToClipboard(val)
 				uiState.CopyFlashUntil = time.Now().Add(1200 * time.Millisecond)
 				go func() {
 					time.Sleep(1300 * time.Millisecond)
@@ -226,6 +244,7 @@ func HandleMouse(
 			newCursor := *offset + row
 			if newCursor >= 0 && newCursor < len(*filtered) {
 				*cursor = newCursor
+				uiState.RevealAll = false
 				return true
 			}
 		}

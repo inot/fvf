@@ -18,9 +18,10 @@ func RenderAll(
 	policyFetcher PolicyFetcher,
 	status StatusProvider,
 	uiState *UIState,
-) (copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW int) {
+) (copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW, revealBtnX, revealBtnY, revealBtnW int) {
 	copyBtnX, copyBtnY, copyBtnW = -1, -1, 0
 	toggleBtnX, toggleBtnY, toggleBtnW = -1, -1, 0
+	revealBtnX, revealBtnY, revealBtnW = -1, -1, 0
 
 	s.Clear()
 	w, h := s.Size()
@@ -87,7 +88,7 @@ func RenderAll(
 				}
 			}
 		}
-		drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, uiState.Filtered, uiState.Cursor, printValues, uiState.JSONPreview, val, policies, uiState.PreviewWrap)
+		drawPreview(s, rightX+1, contentTop, w-(rightX+1), maxRows, uiState.Filtered, uiState.Cursor, printValues, uiState.JSONPreview, val, policies, uiState.PreviewWrap, uiState.RevealAll)
 
 		// Remember current fetched value for header copy button
 		uiState.CurrentFetchedVal = val
@@ -216,6 +217,9 @@ func RenderAll(
 						lbl = lbl + strings.Repeat(" ", pad)
 					}
 					putLine(s, bx, y, lbl)
+					if !uiState.RevealAll {
+						valToCopy = "***"
+					}
 					uiState.PerLineCopyBtns = append(uiState.PerLineCopyBtns, PerLineCopyBtn{X: bx, Y: y, W: btnW, Key: key, Val: valToCopy})
 				}
 			}
@@ -226,10 +230,11 @@ func RenderAll(
 			headerX := rightX + 1
 			headerY := contentTop
 			paneW := w - headerX
-			copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW = drawHeaderButtons(s, headerX, headerY, paneW, uiState.JSONPreview, uiState.CopyFlashUntil)
+			copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW, revealBtnX, revealBtnY, revealBtnW = drawHeaderButtons(s, headerX, headerY, paneW, uiState.JSONPreview, uiState.CopyFlashUntil, uiState.RevealAll)
 		} else {
 			copyBtnX, copyBtnY, copyBtnW = -1, -1, 0
 			toggleBtnX, toggleBtnY, toggleBtnW = -1, -1, 0
+			revealBtnX, revealBtnY, revealBtnW = -1, -1, 0
 		}
 	}
 

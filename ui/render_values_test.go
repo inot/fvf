@@ -94,7 +94,7 @@ func TestHandleMouse_ClickCopyButtonSetsFlash(t *testing.T) {
 
 	// Click on the first button
 	ev := tcell.NewEventMouse(btn.X, btn.Y, tcell.Button1, 0)
-	_ = HandleMouse(s, ev, &st.Filtered, &st.Cursor, &st.Offset, st, -1, -1, 0, -1, -1, 0, nil)
+	_ = HandleMouse(s, ev, &st.Filtered, &st.Cursor, &st.Offset, st, -1, -1, 0, -1, -1, 0, -1, -1, 0, nil)
 
 	if _, ok := st.PerKeyFlash[btn.Key]; !ok {
 		t.Fatalf("expected flash to be set for key %q after click", btn.Key)

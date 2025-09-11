@@ -19,7 +19,7 @@ func TestDrawPreview_RendersPathAndSeparator(t *testing.T) {
     filtered := []search.FoundItem{{Path: "secret/foo", Value: map[string]interface{}{"a": 1, "b": 2}}}
     w := 40
     h := 6
-    drawPreview(s, 0, 0, w, h, filtered, 0, true, false, "", []string{"default"}, false)
+    drawPreview(s, 0, 0, w, h, filtered, 0, true, false, "", []string{"default"}, false, true)
 
     // Extract first two lines to check path and separator
     checkLine := func(y int) string {
@@ -63,7 +63,7 @@ func TestDrawPreview_TableWrapAlignment_WrapOn(t *testing.T) {
     filtered := []search.FoundItem{{Path: "secret/foo", Value: val}}
     w := 15
     h := 8
-    drawPreview(s, 0, 0, w, h, filtered, 0, true, false, "", []string{"default"}, true)
+    drawPreview(s, 0, 0, w, h, filtered, 0, true, false, "", []string{"default"}, true, true)
 
     readLine := func(y int) string {
         line := make([]rune, 0, w)
@@ -117,7 +117,7 @@ func TestDrawPreview_TableWrapAlignment_WrapOff(t *testing.T) {
     filtered := []search.FoundItem{{Path: "secret/foo", Value: val}}
     w := 15
     h := 8
-    drawPreview(s, 0, 0, w, h, filtered, 0, true, false, "", []string{"default"}, false)
+    drawPreview(s, 0, 0, w, h, filtered, 0, true, false, "", []string{"default"}, false, true)
 
     readLine := func(y int) string {
         line := make([]rune, 0, w)

@@ -364,8 +364,8 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
     if err := s.Init(); err != nil {
         return err
     }
-    // Enable mouse by default; user can toggle with Left Arrow
-    s.EnableMouse()
+    // Mouse is disabled by default; user can toggle with Left Arrow
+    // s.EnableMouse() will be invoked only when toggled on
     defer s.DisableMouse()
     defer s.Fini()
 
@@ -387,7 +387,7 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
         PreviewErr:    make(map[string]error),
         PerKeyFlash:   make(map[string]time.Time),
         PreviewWrap:   false,
-        MouseEnabled:  true,
+        MouseEnabled:  false,
         PrintValues:   printValues,
         JSONPreview:   jsonPreview,
     }
@@ -405,8 +405,9 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
     uiState.CopyFlashUntil = time.Time{}
     uiState.CurrentFetchedVal = ""
 
-    // Header toggle button [json]/[tbl]
+    // Header buttons: toggle [json]/[tbl], reveal [reveal]/[hide]
     toggleBtnX, toggleBtnY, toggleBtnW := -1, -1, 0
+    revealBtnX, revealBtnY, revealBtnW := -1, -1, 0
 
     // quit signal handling: wake event loop when requested to exit
     var shouldQuit atomic.Bool
@@ -420,7 +421,7 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
     }
 
     redraw := func() {
-        copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW = RenderAll(
+        copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW, revealBtnX, revealBtnY, revealBtnW = RenderAll(
             s,
             printValues,
             fetcher,
@@ -483,7 +484,7 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
             s.Sync()
             redraw()
         case *tcell.EventMouse:
-            shouldRedraw := HandleMouse(s, ev, &uiState.Filtered, &uiState.Cursor, &uiState.Offset, uiState, copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW, activity)
+            shouldRedraw := HandleMouse(s, ev, &uiState.Filtered, &uiState.Cursor, &uiState.Offset, uiState, copyBtnX, copyBtnY, copyBtnW, toggleBtnX, toggleBtnY, toggleBtnW, revealBtnX, revealBtnY, revealBtnW, activity)
             if shouldRedraw {
                 redraw()
             }
@@ -495,7 +496,44 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
     }
 }
 
-func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, jsonPreview bool, fetched string, policies []string, wrap bool) {
+// maskKV returns a copy of kv with all values replaced by "***" when mask=true.
+func maskKV(kv map[string]string, mask bool) map[string]string {
+    if !mask || kv == nil {
+        return kv
+    }
+    out := make(map[string]string, len(kv))
+    for k := range kv {
+        out[k] = "***"
+    }
+    return out
+}
+
+// maskJSONStrings walks a generic JSON structure and replaces string values with "***" when mask=true.
+func maskJSONStrings(v interface{}, mask bool) interface{} {
+    if !mask {
+        return v
+    }
+    switch t := v.(type) {
+    case map[string]interface{}:
+        m := make(map[string]interface{}, len(t))
+        for k, val := range t {
+            m[k] = maskJSONStrings(val, mask)
+        }
+        return m
+    case []interface{}:
+        a := make([]interface{}, len(t))
+        for i, val := range t {
+            a[i] = maskJSONStrings(val, mask)
+        }
+        return a
+    case string:
+        return "***"
+    default:
+        return t
+    }
+}
+
+func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cursor int, printValues bool, jsonPreview bool, fetched string, policies []string, wrap bool, reveal bool) {
 	if cursor < 0 || cursor >= len(filtered) || w <= 0 || h <= 0 {
 		return
 	}
@@ -528,113 +566,145 @@ func drawPreview(s tcell.Screen, x, y, w, h int, filtered []search.FoundItem, cu
 	secretsY := y + headerHeight + separatorHeight
 	secretsLines := make([]string, 0)
 
-	// Check if we're in test mode (fetched is empty and we have a value to display)
-	testMode := fetched == "" && len(filtered) > 0 && filtered[cursor].Value != nil
+    // Check if we're in test mode (fetched is empty and we have a value to display)
+    testMode := fetched == "" && len(filtered) > 0 && filtered[cursor].Value != nil
 
-	if printValues || testMode {
-		if testMode || fetched != "" {
-			if testMode {
-				// In test mode, use the value directly from the test data
-				if val, ok := filtered[cursor].Value.(map[string]interface{}); ok {
-					kv := toKVFromMap(val)
-					secretsLines = append(secretsLines, renderKVTable(kv)...)
-				}
-			} else if jsonPreview && isLikelyJSON(fetched) {
-				secretsLines = append(secretsLines, strings.Split(fetched, "\n")...)
-			} else if isLikelyJSON(fetched) {
+    if printValues || testMode {
+        if testMode || fetched != "" {
+            if testMode {
+                // In test mode, use the value directly from the test data
+                if val, ok := filtered[cursor].Value.(map[string]interface{}); ok {
+                    kv := toKVFromMap(val)
+                    kv = maskKV(kv, !reveal)
+                    secretsLines = append(secretsLines, renderKVTable(kv)...)
+                }
+            } else if jsonPreview && isLikelyJSON(fetched) {
+                // Mask JSON strings when not revealed
+                var obj interface{}
+                if err := json.Unmarshal([]byte(fetched), &obj); err == nil {
+                    obj = maskJSONStrings(obj, !reveal)
+                    if b, err := json.MarshalIndent(obj, "", "  "); err == nil {
+                        secretsLines = append(secretsLines, strings.Split(string(b), "\n")...)
+                    } else {
+                        secretsLines = append(secretsLines, strings.Split(fetched, "\n")...)
+                    }
+                } else {
+                    secretsLines = append(secretsLines, strings.Split(fetched, "\n")...)
+                }
+            } else if isLikelyJSON(fetched) {
                 // In table mode, render JSON object as a padded key-value table for alignment
                 var obj map[string]interface{}
                 if err := json.Unmarshal([]byte(fetched), &obj); err == nil {
                     kv := toKVFromMap(obj)
+                    kv = maskKV(kv, !reveal)
                     secretsLines = append(secretsLines, renderKVTable(kv)...)
                 } else {
                     // Fallback to readable JSON lines
-                    secretsLines = append(secretsLines, toLinesFromJSONText(fetched)...)
+                    if !reveal {
+                        // Mask any key: value lines if we can parse
+                        kv := toKVFromLines(fetched)
+                        if len(kv) > 0 {
+                            kv = maskKV(kv, true)
+                            secretsLines = append(secretsLines, renderKVTable(kv)...)
+                        } else {
+                            secretsLines = append(secretsLines, strings.Split("***", "\n")...)
+                        }
+                    } else {
+                        secretsLines = append(secretsLines, toLinesFromJSONText(fetched)...)
+                    }
                 }
-			} else {
-				kv := toKVFromLines(fetched)
-				if len(kv) > 0 {
-					if jsonPreview {
-						// Render KV as pretty JSON when jsonPreview is ON
-						if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
-							secretsLines = append(secretsLines, strings.Split(string(b), "\n")...)
-						} else {
-							secretsLines = append(secretsLines, renderKVTable(kv)...)
-						}
-					} else {
-						secretsLines = append(secretsLines, renderKVTable(kv)...)
-					}
-				} else {
-					secretsLines = append(secretsLines, strings.Split(fetched, "\n")...)
-				}
-			}
-		} else {
-			secretsLines = append(secretsLines, "(no values to preview)")
-		}
-	} else {
-		secretsLines = append(secretsLines, "(run with -values to include secret values)")
-	}
+            } else {
+                kv := toKVFromLines(fetched)
+                if len(kv) > 0 {
+                    if jsonPreview {
+                        // Render KV as pretty JSON when jsonPreview is ON
+                        if !reveal {
+                            kv = maskKV(kv, true)
+                        }
+                        if b, err := json.MarshalIndent(kv, "", "  "); err == nil {
+                            secretsLines = append(secretsLines, strings.Split(string(b), "\n")...)
+                        } else {
+                            secretsLines = append(secretsLines, renderKVTable(kv)...)
+                        }
+                    } else {
+                        kv = maskKV(kv, !reveal)
+                        secretsLines = append(secretsLines, renderKVTable(kv)...)
+                    }
+                } else {
+                    if !reveal {
+                        secretsLines = append(secretsLines, "***")
+                    } else {
+                        secretsLines = append(secretsLines, strings.Split(fetched, "\n")...)
+                    }
+                }
+            }
+        } else {
+            secretsLines = append(secretsLines, "(no values to preview)")
+        }
+    } else {
+        secretsLines = append(secretsLines, "(run with -values to include secret values)")
+    }
 
-	// Draw secrets section
-	drawSection := func(s tcell.Screen, x, y, w, maxH int, lines []string, wrap bool) {
-		if maxH <= 0 || len(lines) == 0 {
-			return
-		}
+    // Draw secrets section
+    drawSection := func(s tcell.Screen, x, y, w, maxH int, lines []string, wrap bool) {
+        if maxH <= 0 || len(lines) == 0 {
+            return
+        }
 
-		// If wrapping is enabled and we're in values-table mode, perform table-aware wrapping
-		if wrap && printValues && !jsonPreview && len(lines) > 1 {
-			head := lines[:1]
-			body := lines[1:]
-			body = wrapTableLines(body, w)
-			lines = append(head, body...)
-			wrap = false
-		}
+        // If wrapping is enabled and we're in values-table mode, perform table-aware wrapping
+        if wrap && printValues && !jsonPreview && len(lines) > 1 {
+            head := lines[:1]
+            body := lines[1:]
+            body = wrapTableLines(body, w)
+            lines = append(head, body...)
+            wrap = false
+        }
 
-		// Truncate if we have more lines than available height
-		if len(lines) > maxH {
-			lines = lines[:maxH-1]
-			lines = append(lines, "... (more content truncated)")
-		}
+        // Truncate if we have more lines than available height
+        if len(lines) > maxH {
+            lines = lines[:maxH-1]
+            lines = append(lines, "... (more content truncated)")
+        }
 
-		// Draw each line
-		for i, line := range lines {
-			if i >= maxH {
-				break
-			}
-			if !wrap && runewidth.StringWidth(line) > w {
-				line = runewidth.Truncate(line, w, "…")
-			}
-			putLine(s, x, y+i, line)
-		}
-	}
+        // Draw each line
+        for i, line := range lines {
+            if i >= maxH {
+                break
+            }
+            if !wrap && runewidth.StringWidth(line) > w {
+                line = runewidth.Truncate(line, w, "…")
+            }
+            putLine(s, x, y+i, line)
+        }
+    }
 
-	// Draw secrets section
-	drawSection(s, x, secretsY, w, secretsHeight, secretsLines, wrap)
+    // Draw secrets section
+    drawSection(s, x, secretsY, w, secretsHeight, secretsLines, wrap)
 
-	// Draw separator between secrets and policies
-	if h > secretsY+secretsHeight-y {
-		sepY := secretsY + secretsHeight
-		if sepY < y+h {
-			putLine(s, x, sepY, makeSeparator(w))
-		}
-	}
+    // Draw separator between secrets and policies
+    if h > secretsY+secretsHeight-y {
+        sepY := secretsY + secretsHeight
+        if sepY < y+h {
+            putLine(s, x, sepY, makeSeparator(w))
+        }
+    }
 
-	// Process and draw policies section (bottom section)
-	policiesY := secretsY + secretsHeight + 1
-	policiesLines := make([]string, 0)
+    // Process and draw policies section (bottom section)
+    policiesY := secretsY + secretsHeight + 1
+    policiesLines := make([]string, 0)
 
-	// Add policies section header
-	policiesLines = append(policiesLines, "=== User Policies ===")
+    // Add policies section header
+    policiesLines = append(policiesLines, "=== User Policies ===")
 
-	// Add policies if available
-	if len(policies) > 0 {
-		for _, policy := range policies {
-			policiesLines = append(policiesLines, "• "+policy)
-		}
-	} else {
-		policiesLines = append(policiesLines, "No policies found")
-	}
+    // Add policies if available
+    if len(policies) > 0 {
+        for _, policy := range policies {
+            policiesLines = append(policiesLines, "• "+policy)
+        }
+    } else {
+        policiesLines = append(policiesLines, "No policies found")
+    }
 
-	// Draw policies section
-	drawSection(s, x, policiesY, w, policiesHeight, policiesLines, false)
+    // Draw policies section
+    drawSection(s, x, policiesY, w, policiesHeight, policiesLines, false)
 }

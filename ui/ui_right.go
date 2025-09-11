@@ -55,5 +55,5 @@ func drawRightPane(
 	policies []string,
 	wrap bool,
 ) {
-	drawPreview(s, x, y, w, maxRows, filtered, cursor, printValues, jsonPreview, val, policies, wrap)
+	drawPreview(s, x, y, w, maxRows, filtered, cursor, printValues, jsonPreview, val, policies, wrap, false)
 }

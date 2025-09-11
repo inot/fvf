@@ -20,7 +20,7 @@ func TestRenderAll_BasicFrame(t *testing.T) {
 		PreviewErr:   make(map[string]error),
 	}
 
-	copyX, copyY, copyW, toggleX, toggleY, toggleW := RenderAll(s, false, nil, nil, func() (string, string, string) { return "L", "M", "R" }, st)
+	copyX, copyY, copyW, toggleX, toggleY, toggleW, _, _, _ := RenderAll(s, false, nil, nil, func() (string, string, string) { return "L", "M", "R" }, st)
 	// Header buttons should be disabled when printValues=false
 	if copyW != 0 || toggleW != 0 {
 		t.Fatalf("expected no header buttons when printValues=false; got copyW=%d, toggleW=%d", copyW, toggleW)

@@ -8,14 +8,15 @@ import (
 )
 
 // drawHeaderButtons draws header buttons aligned to the right of the right pane header line.
-// It draws a [json]/[tbl] toggle (left) and a [copy] button (right). Returns the button bounds
+// It draws a [json]/[tbl] toggle (left), a [reveal]/[hide] button (middle), and a [copy] button (right). Returns the button bounds
 // for click handling.
 func drawHeaderButtons(
 	s tcell.Screen,
 	headerX, headerY, paneW int,
 	jsonPreview bool,
 	copyFlashUntil time.Time,
-) (copyX, copyY, copyW, toggleX, toggleY, toggleW int) {
+	reveal bool,
+) (copyX, copyY, copyW, toggleX, toggleY, toggleW, revealX, revealY, revealW int) {
 	// Copy button label/width
 	copyBase := "[copy]"
 	copyOk := "[OK]"
@@ -38,15 +39,25 @@ func drawHeaderButtons(
 	}
 	toggleW = runewidth.StringWidth(toggleLabel)
 
-	// Layout: [toggle] [space] [copy] aligned to right
+	// Reveal button
+	revealLabel := "[reveal]"
+	if reveal {
+		revealLabel = "[hide]"
+	}
+	revealW = runewidth.StringWidth(revealLabel)
+
+	// Layout (right aligned): [toggle] [space] [reveal] [space] [copy]
 	bxCopy := headerX + paneW - copyW
-	bxToggle := bxCopy - 1 - toggleW
+	bxReveal := bxCopy - 1 - revealW
+	bxToggle := bxReveal - 1 - toggleW
 	if bxToggle < headerX {
 		bxToggle = headerX
-		bxCopy = bxToggle + toggleW + 1
+		bxReveal = bxToggle + toggleW + 1
+		bxCopy = bxReveal + revealW + 1
 	}
 	putLine(s, bxToggle, headerY, toggleLabel)
+	putLine(s, bxReveal, headerY, revealLabel)
 	putLine(s, bxCopy, headerY, label)
 
-	return bxCopy, headerY, copyW, bxToggle, headerY, toggleW
+	return bxCopy, headerY, copyW, bxToggle, headerY, toggleW, bxReveal, headerY, revealW
 }

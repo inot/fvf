@@ -31,6 +31,7 @@ type UIState struct {
 	// Header buttons
 	HeaderCopyBtn  ButtonBounds
 	HeaderToggleBtn ButtonBounds
+	HeaderRevealBtn ButtonBounds
 	CopyFlashUntil time.Time
 	CurrentFetchedVal string
 
@@ -39,6 +40,7 @@ type UIState struct {
 	MouseEnabled bool
 	PrintValues  bool
 	JSONPreview  bool
+	RevealAll    bool
 }
 
 // ApplyFilter filters Items into Filtered based on Query and normalizes Cursor/Offset.

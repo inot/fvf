@@ -81,10 +81,10 @@ func TestHandleMouse_WheelScroll(t *testing.T) {
 	uiState := &UIState{MouseEnabled: true}
 
 	ev := tcell.NewEventMouse(0, 0, tcell.WheelUp, 0)
-	redraw := HandleMouse(s, ev, &filtered, &cursor, &offset, uiState, -1, -1, 0, -1, -1, 0, nil)
+	redraw := HandleMouse(s, ev, &filtered, &cursor, &offset, uiState, -1, -1, 0, -1, -1, 0, -1, -1, 0, nil)
 	if !redraw || cursor != 0 { t.Fatalf("wheel up should move cursor to 0; cursor=%d", cursor) }
 
 	ev = tcell.NewEventMouse(0, 0, tcell.WheelDown, 0)
-	redraw = HandleMouse(s, ev, &filtered, &cursor, &offset, uiState, -1, -1, 0, -1, -1, 0, nil)
+	redraw = HandleMouse(s, ev, &filtered, &cursor, &offset, uiState, -1, -1, 0, -1, -1, 0, -1, -1, 0, nil)
 	if !redraw || cursor != 1 { t.Fatalf("wheel down should move cursor to 1; cursor=%d", cursor) }
 }
