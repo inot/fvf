@@ -43,6 +43,16 @@ export VAULT_TOKEN="...your token..."
   - Type to filter; Up/Down to navigate; Enter prints secret value.
   - Right pane shows value preview (when available).
 
+#### Keys (TUI)
+
+- Up/Down: move selection
+- Tab: toggle wrap in preview
+- Left Arrow: toggle mouse on/off
+- Right Arrow: reveal/hide secret values
+- Mouse: wheel scroll; click to move; click on [copy] buttons
+- Header: [json]/[tbl] toggle, full-secret [copy]
+- Enter: prints using the current preview mode (JSON in JSON view; padded table lines in table view)
+
 - Interactive streaming (default in interactive mode; progressive results, faster startup):
 
   ```sh
@@ -128,7 +138,9 @@ export VAULT_TOKEN="...your token..."
 - -name string          Substring match on last path segment
 - -values               Print values (interactive preview when stdout is a TTY; raw-friendly output otherwise)
 - -max-depth int        Max recursion depth (0 = unlimited)
-- -json                 Output JSON array (TTY: opens interactive with JSON preview)
+- -json                 Output JSON array
+                        - TTY stdout → opens interactive with JSON preview
+                        - Non-TTY stdout → prints JSON array to stdout
 - -timeout duration     Total timeout (default 30s)
 - -interactive          Force interactive TUI (interactive streams results by default)
 - -version             Print version and exit
@@ -240,3 +252,11 @@ MIT
 - Added in-memory caching for user policies to reduce Vault API calls
 - Fixed UI test cases to match actual table rendering output
 - Improved table alignment and key-value formatting consistency
+- Mouse support in the TUI: scroll with wheel, click to move selection.
+- Per-item `[copy]` buttons in the preview pane to copy individual values.
+- Header buttons: `[json]/[tbl]` preview toggle and full-secret `[copy]`.
+- Enter output now matches the current preview mode (JSON in JSON view, padded table lines in table view).
+- Mouse disabled by default; Left Arrow toggles mouse
+- Secret values masked by default; header `[reveal]/[hide]` button added
+- Right Arrow toggles reveal/hide
+- Copy buttons always copy real (unmasked) values
