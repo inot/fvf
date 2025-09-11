@@ -64,10 +64,10 @@ func TestHandleKey_Toggles(t *testing.T) {
 		t.Fatalf("expected PreviewWrap=true after TAB")
 	}
 
-	// 'm' toggle
-	_, _ = HandleKey(s, tcell.NewEventKey(tcell.KeyRune, 'm', 0), &items, &filtered, &query, &cursor, &offset, map[string]string{}, nil, uiState, apply, nil)
+	// Left Arrow toggle for mouse
+	_, _ = HandleKey(s, tcell.NewEventKey(tcell.KeyLeft, 0, 0), &items, &filtered, &query, &cursor, &offset, map[string]string{}, nil, uiState, apply, nil)
 	if uiState.MouseEnabled {
-		t.Fatalf("expected MouseEnabled=false after 'm'")
+		t.Fatalf("expected MouseEnabled=false after Left Arrow")
 	}
 }
 

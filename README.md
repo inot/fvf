@@ -47,7 +47,7 @@ export VAULT_TOKEN="...your token..."
 
 - Up/Down: move selection
 - Tab: toggle wrap in preview
-- m: toggle mouse on/off
+- Left Arrow: toggle mouse on/off
 - Mouse: wheel scroll; click to move; click on [copy] buttons
 - Header: [json]/[tbl] toggle, full-secret [copy]
 - Enter: prints using the current preview mode (JSON in JSON view; padded table in table view)

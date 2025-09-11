@@ -364,7 +364,7 @@ func runStreamImpl(itemsCh <-chan search.FoundItem, printValues bool, jsonPrevie
     if err := s.Init(); err != nil {
         return err
     }
-    // Enable mouse by default; user can toggle with 'm'
+    // Enable mouse by default; user can toggle with Left Arrow
     s.EnableMouse()
     defer s.DisableMouse()
     defer s.Fini()

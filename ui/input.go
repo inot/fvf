@@ -104,6 +104,14 @@ func HandleKey(
 			*query = (*query)[:len(*query)-1]
 			applyFilter()
 		}
+	case tcell.KeyLeft:
+		// Toggle mouse enablement with Left Arrow
+		uiState.MouseEnabled = !uiState.MouseEnabled
+		if uiState.MouseEnabled {
+			s.EnableMouse()
+		} else {
+			s.DisableMouse()
+		}
 	case tcell.KeyTAB:
 		uiState.PreviewWrap = !uiState.PreviewWrap
 	case tcell.KeyRune:
@@ -111,16 +119,6 @@ func HandleKey(
 		// Some terminals send Tab as a rune instead of KeyTAB.
 		if r == '\t' {
 			uiState.PreviewWrap = !uiState.PreviewWrap
-			break
-		}
-		// Toggle mouse enablement
-		if r == 'm' || r == 'M' {
-			uiState.MouseEnabled = !uiState.MouseEnabled
-			if uiState.MouseEnabled {
-				s.EnableMouse()
-			} else {
-				s.DisableMouse()
-			}
 			break
 		}
 		if r != 0 {

@@ -36,7 +36,7 @@ func RenderAll(
 	if uiState.MouseEnabled {
 		mouseState = "on"
 	}
-	help := fmt.Sprintf("%d/%d  (Up/Down: move, Enter: select, Tab: wrap[%s], m: mouse[%s], Esc: quit)", len(uiState.Filtered), len(uiState.Items), wrapState, mouseState)
+	help := fmt.Sprintf("%d/%d  (Up/Down: move, Enter: select, Tab: wrap[%s], Left: mouse[%s], Esc: quit)", len(uiState.Filtered), len(uiState.Items), wrapState, mouseState)
 	putLine(s, 0, 1, help)
 
 	contentTop := 2
