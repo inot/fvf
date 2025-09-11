@@ -119,6 +119,9 @@ func HandleKey(
 		} else {
 			s.DisableMouse()
 		}
+	case tcell.KeyRight:
+		// Toggle reveal all secret values with Right Arrow
+		uiState.RevealAll = !uiState.RevealAll
 	case tcell.KeyTAB:
 		uiState.PreviewWrap = !uiState.PreviewWrap
 	case tcell.KeyRune:
@@ -222,11 +225,7 @@ func HandleMouse(
 		}
 		if copyBtnW > 0 && my == copyBtnY && mx >= copyBtnX && mx < copyBtnX+copyBtnW {
 			if uiState.CurrentFetchedVal != "" {
-				val := uiState.CurrentFetchedVal
-				if !uiState.RevealAll {
-					val = "***"
-				}
-				_ = copyToClipboard(val)
+				_ = copyToClipboard(uiState.CurrentFetchedVal)
 				uiState.CopyFlashUntil = time.Now().Add(1200 * time.Millisecond)
 				go func() {
 					time.Sleep(1300 * time.Millisecond)

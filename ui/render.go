@@ -37,7 +37,7 @@ func RenderAll(
 	if uiState.MouseEnabled {
 		mouseState = "on"
 	}
-	help := fmt.Sprintf("%d/%d  (Up/Down: move, Enter: select, Tab: wrap[%s], Left: mouse[%s], Esc: quit)", len(uiState.Filtered), len(uiState.Items), wrapState, mouseState)
+	help := fmt.Sprintf("%d/%d  (Up/Down: move, Enter: select, Tab: wrap[%s], Left: mouse[%s], Right: reveal/hide, Esc: quit)", len(uiState.Filtered), len(uiState.Items), wrapState, mouseState)
 	putLine(s, 0, 1, help)
 
 	contentTop := 2
@@ -217,9 +217,7 @@ func RenderAll(
 						lbl = lbl + strings.Repeat(" ", pad)
 					}
 					putLine(s, bx, y, lbl)
-					if !uiState.RevealAll {
-						valToCopy = "***"
-					}
+					// Always copy the real value, even when masked visually
 					uiState.PerLineCopyBtns = append(uiState.PerLineCopyBtns, PerLineCopyBtn{X: bx, Y: y, W: btnW, Key: key, Val: valToCopy})
 				}
 			}

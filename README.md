@@ -48,9 +48,10 @@ export VAULT_TOKEN="...your token..."
 - Up/Down: move selection
 - Tab: toggle wrap in preview
 - Left Arrow: toggle mouse on/off
+- Right Arrow: reveal/hide secret values
 - Mouse: wheel scroll; click to move; click on [copy] buttons
 - Header: [json]/[tbl] toggle, full-secret [copy]
-- Enter: prints using the current preview mode (JSON in JSON view; padded table in table view)
+- Enter: prints using the current preview mode (JSON in JSON view; padded table lines in table view)
 
 - Interactive streaming (default in interactive mode; progressive results, faster startup):
 
@@ -255,3 +256,7 @@ MIT
 - Per-item `[copy]` buttons in the preview pane to copy individual values.
 - Header buttons: `[json]/[tbl]` preview toggle and full-secret `[copy]`.
 - Enter output now matches the current preview mode (JSON in JSON view, padded table lines in table view).
+- Mouse disabled by default; Left Arrow toggles mouse
+- Secret values masked by default; header `[reveal]/[hide]` button added
+- Right Arrow toggles reveal/hide
+- Copy buttons always copy real (unmasked) values
