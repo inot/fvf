@@ -218,7 +218,7 @@ func parseFlagsWithArgs(args []string) options {
 	fs.BoolVar(&opts.forceKV2, "force-kv2", false, "Force KV v2 and skip auto-detection")
 	fs.StringVar(&opts.match, "match", "", "Optional regex to match full logical path")
 	fs.StringVar(&opts.namePart, "name", "", "Case-insensitive substring to match secret name (last segment)")
-	fs.BoolVar(&opts.printValues, "values", false, "Print values (interactive preview when stdout is a TTY)")
+	fs.BoolVar(&opts.printValues, "values", true, "Print values (interactive preview when stdout is a TTY)")
 	fs.IntVar(&opts.maxDepth, "max-depth", 0, "Maximum recursion depth (0 = unlimited)")
 	fs.BoolVar(&opts.jsonOut, "json", false, "Output JSON array instead of lines")
 	fs.DurationVar(&opts.timeout, "timeout", 30*time.Second, "Total timeout for the operation")
@@ -304,9 +304,9 @@ func buildMatcher(pattern string) (*regexp.Regexp, error) {
 // valuesDuringWalk returns whether values should be fetched during Walk.
 // In interactive mode we avoid fetching to keep the UI responsive.
 func valuesDuringWalk(opts options) bool {
-    // When producing JSON output in non-interactive mode, include values.
-    // Also include values when -values is explicitly requested.
-    return (opts.printValues || opts.jsonOut) && !opts.interactive
+	// When producing JSON output in non-interactive mode, include values.
+	// Also include values when -values is explicitly requested.
+	return (opts.printValues || opts.jsonOut) && !opts.interactive
 }
 
 // decideKV2ForMountMeta determines kv2 based on CLI flags and mount metadata.
